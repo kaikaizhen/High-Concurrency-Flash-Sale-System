@@ -1,0 +1,33 @@
+# 本機開發用的相依服務。
+#
+# 本專案的量測是在既有的遠端 Redis 上完成的，這個檔案的用途是讓
+# 沒有現成 Redis 的人可以一行指令重現環境：
+#
+#     docker compose up -d redis
+#
+# 起來之後把 appsettings.Development.json 的 Redis:Configuration
+# 改成 localhost:6379 即可。
+#
+# 後續 Stage 會在這裡加入 rabbitmq、nginx 與多個 api instance。
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: flashsale-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

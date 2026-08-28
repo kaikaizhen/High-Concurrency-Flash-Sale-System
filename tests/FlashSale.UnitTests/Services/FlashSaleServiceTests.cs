@@ -1,7 +1,10 @@
+using FlashSale.Api.Common.Constants;
 using FlashSale.Api.Common.Enums;
 using FlashSale.Api.Common.Exceptions;
+using FlashSale.Api.Infrastructure.Cache;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Entities;
+using FlashSale.Api.Options;
 using FlashSale.Api.Services;
 using FlashSale.Api.Services.Interfaces;
 using Moq;
@@ -9,11 +12,33 @@ using Moq;
 namespace FlashSale.UnitTests.Services;
 
 /// <summary>
-/// FlashSaleService 在 Stage 3 之後只負責挑選並委派策略，
+/// FlashSaleService 在 Stage 3 之後負責挑選並委派策略，
+/// Stage 4 起再加上成交後的快取失效。
 /// 實際的搶購邏輯測試在 <see cref="FlashSaleStrategyTests"/>。
 /// </summary>
 public class FlashSaleServiceTests
 {
+    private readonly Mock<ICacheService> _cache = new();
+
+    private readonly CacheOptions _cacheOptions = new() { Enabled = true };
+
+    public FlashSaleServiceTests()
+    {
+        _cache
+            .Setup(x => x.RemoveAsync(It.IsAny<string>()))
+            .Returns(Task.CompletedTask);
+    }
+
+    private FlashSaleService CreateSut(
+        params IFlashSalePurchaseStrategy[] strategies)
+    {
+        return new FlashSaleService(
+            strategies,
+            _cache.Object,
+            Microsoft.Extensions.Options.Options.Create(_cacheOptions),
+            TestMapperFactory.Create());
+    }
+
     private static Mock<IFlashSalePurchaseStrategy> CreateStrategy(
         FlashSaleStrategy strategy,
         Order? result = null)
@@ -42,9 +67,7 @@ public class FlashSaleServiceTests
         var atomic = CreateStrategy(FlashSaleStrategy.Atomic);
         var transaction = CreateStrategy(FlashSaleStrategy.Transaction);
 
-        var sut = new FlashSaleService(
-            new[] { atomic.Object, transaction.Object },
-            TestMapperFactory.Create());
+        var sut = CreateSut(atomic.Object, transaction.Object);
 
         await sut.PurchaseAsync(new CreateFlashSaleDtoModel
         {
@@ -78,9 +101,7 @@ public class FlashSaleServiceTests
 
         var atomic = CreateStrategy(FlashSaleStrategy.Atomic, order);
 
-        var sut = new FlashSaleService(
-            new[] { atomic.Object },
-            TestMapperFactory.Create());
+        var sut = CreateSut(atomic.Object);
 
         var result = await sut.PurchaseAsync(new CreateFlashSaleDtoModel
         {
@@ -101,9 +122,7 @@ public class FlashSaleServiceTests
     {
         var atomic = CreateStrategy(FlashSaleStrategy.Atomic);
 
-        var sut = new FlashSaleService(
-            new[] { atomic.Object },
-            TestMapperFactory.Create());
+        var sut = CreateSut(atomic.Object);
 
         await Assert.ThrowsAsync<BusinessException>(
             () => sut.PurchaseAsync(new CreateFlashSaleDtoModel
@@ -113,6 +132,61 @@ public class FlashSaleServiceTests
                 Quantity = 1,
                 Strategy = FlashSaleStrategy.Optimistic
             }));
+    }
+
+    // ------------------------------------------------------------------
+    // Stage 4 — 成交後的快取失效
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task PurchaseAsync_WhenPurchaseSucceeds_ShouldInvalidateProductCache()
+    {
+        var atomic = CreateStrategy(FlashSaleStrategy.Atomic);
+
+        var sut = CreateSut(atomic.Object);
+
+        await sut.PurchaseAsync(new CreateFlashSaleDtoModel
+        {
+            ProductId = 7,
+            UserId = 1,
+            Quantity = 1,
+            Strategy = FlashSaleStrategy.Atomic
+        });
+
+        // 搶購改動了庫存，商品快取必須失效，
+        // 否則商品頁在整場秒殺期間都顯示錯的庫存
+        _cache.Verify(
+            x => x.RemoveAsync(CacheKeys.Product(7)),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_WhenPurchaseFails_ShouldNotInvalidateProductCache()
+    {
+        var atomic = new Mock<IFlashSalePurchaseStrategy>();
+
+        atomic.SetupGet(x => x.Strategy).Returns(FlashSaleStrategy.Atomic);
+
+        atomic
+            .Setup(x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()))
+            .ThrowsAsync(new BusinessException("Insufficient stock."));
+
+        var sut = CreateSut(atomic.Object);
+
+        await Assert.ThrowsAsync<BusinessException>(
+            () => sut.PurchaseAsync(new CreateFlashSaleDtoModel
+            {
+                ProductId = 7,
+                UserId = 1,
+                Quantity = 1,
+                Strategy = FlashSaleStrategy.Atomic
+            }));
+
+        // 沒有成交就沒有庫存變動，清快取只會製造沒必要的 Miss。
+        // 秒殺賣完後 98% 的請求都走這條路徑，清了等於自廢快取。
+        _cache.Verify(
+            x => x.RemoveAsync(It.IsAny<string>()),
+            Times.Never);
     }
 
     [Fact]
