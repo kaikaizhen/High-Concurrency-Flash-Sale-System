@@ -16,7 +16,7 @@
 | 1. CRUD Baseline | `feature/crud` | ✅ 完成 |
 | 2. Race Condition | `feature/race-condition` | ✅ 完成 — [結果](docs/load-test/race-condition.md) |
 | 3. Concurrency Control | `feature/concurrency-control` | ✅ 完成 — [比較](docs/concurrency-comparison.md) |
-| 4. Redis | `feature/redis` | 未開始 |
+| 4. Redis | `feature/redis` | ✅ 完成 — [結果](docs/load-test/redis.md) |
 | 5. Message Queue | `feature/message-queue` | 未開始 |
 | 6. Idempotency | `feature/idempotency` | 未開始 |
 | 7. Rate Limit | `feature/rate-limit` | 未開始 |
@@ -72,12 +72,17 @@ HighConcurrencyFlashSale/
 │   ├── Mappings/               # AutoMapper Profile
 │   ├── Data/                   # AppDbContext / Configurations / Migrations
 │   ├── Common/                 # Enums / Constants / Exceptions
+│   ├── Infrastructure/         # Cache (Redis) / Diagnostics —— 外部 I/O
+│   ├── Options/                # RedisOptions / CacheOptions
 │   ├── Extensions/             # DependencyInjectionExtensions
 │   ├── Middlewares/            # GlobalExceptionMiddleware
 │   └── Program.cs
 │
-├── tests/FlashSale.UnitTests/
-└── docs/
+├── tests/
+│   ├── FlashSale.UnitTests/
+│   └── load/k6/                # k6 腳本與 PowerShell 執行器
+├── docs/
+└── docker-compose.yml          # redis（後續 Stage 會再加 rabbitmq / nginx）
 ```
 
 計畫 §18 規劃的 `FlashSale.Application` / `Domain` / `Infrastructure` / `Worker`
@@ -92,6 +97,8 @@ Stage 5 導入 RabbitMQ Consumer 時才會拆出 `FlashSale.Worker`。
 
 - .NET 9 SDK
 - 可連線的 SQL Server
+- 可連線的 Redis（`docker compose up -d redis` 可起一個本機的）
+- k6（壓測用）：`winget install --id GrafanaLabs.k6`
 
 ### 建立資料庫
 
@@ -187,6 +194,18 @@ Base URL：`http://localhost:5080`
 
 > `Baseline` 是 Stage 1 的無保護版本，**會超賣**，僅作為對照組保留。
 
+### `GET /api/diagnostics/metrics` / `POST /api/diagnostics/metrics/reset`
+
+壓測用的觀測端點。回傳實際送到資料庫的命令數與快取命中率。
+
+```json
+{ "dbCommands": 1, "cacheHits": 4999, "cacheMisses": 42, "cacheErrors": 0, "cacheHitRate": 0.9917 }
+```
+
+`dbCommands` 由 EF Core Interceptor 累加，是實際值而非估算。
+
+> 計數器存在單一 Instance 的記憶體中，Stage 8 導入多 Instance 後需要改寫。
+
 ### 錯誤格式
 
 所有商業錯誤由 `GlobalExceptionMiddleware` 統一輸出：
@@ -277,3 +296,28 @@ Baseline 之所以保留，是為了讓後續 Stage 隨時能重跑比較 ——
 **選定方案：Atomic Update**，為 `strategy` 未指定時的預設值。
 
 完整比較與取捨分析：[docs/concurrency-comparison.md](docs/concurrency-comparison.md)
+
+---
+
+## Stage 4 Redis 快取
+
+```powershell
+$env:Cache__Enabled="false"   # 或 "true"，重啟 API 後
+.\tests\load\k6\Run-CacheTest.ps1 -Label "cache-off"
+```
+
+5000 次 `GET /api/products/{id}`、200 個同時連線：
+
+| | DB 查詢數 | 命中率 | RPS | P99 |
+|---|---:|---:|---:|---:|
+| 快取關閉 | 5000 | — | 2856 | 1562 ms |
+| **快取開啟** | **1** | 99.2% | **15004** | **46 ms** |
+
+三個進階問題的實測（DB 查詢數）：
+
+| | 無保護 | 有保護 |
+|---|---:|---:|
+| Cache Stampede（冷啟動 200 併發） | 77 | **1**（Single Flight） |
+| Cache Penetration（查不存在的 Id） | 5000 | **200**（負向快取） |
+
+完整分析：[docs/load-test/redis.md](docs/load-test/redis.md)

@@ -37,7 +37,7 @@ project.fragment.lock.json
 .vscode/
 .idea/
 *.swp
-.claude/settings.local.json
+.claude/
 
 ## ---------------------------------------------------------------
 ## OS
