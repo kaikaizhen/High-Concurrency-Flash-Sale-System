@@ -2,155 +2,126 @@ using FlashSale.Api.Common.Enums;
 using FlashSale.Api.Common.Exceptions;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Entities;
-using FlashSale.Api.Repositories.Interfaces;
 using FlashSale.Api.Services;
+using FlashSale.Api.Services.Interfaces;
 using Moq;
 
 namespace FlashSale.UnitTests.Services;
 
+/// <summary>
+/// FlashSaleService 在 Stage 3 之後只負責挑選並委派策略，
+/// 實際的搶購邏輯測試在 <see cref="FlashSaleStrategyTests"/>。
+/// </summary>
 public class FlashSaleServiceTests
 {
-    private readonly Mock<IProductRepository> _productRepository = new();
-    private readonly Mock<IOrderRepository> _orderRepository = new();
-
-    private FlashSaleService CreateSut()
+    private static Mock<IFlashSalePurchaseStrategy> CreateStrategy(
+        FlashSaleStrategy strategy,
+        Order? result = null)
     {
-        return new FlashSaleService(
-            _productRepository.Object,
-            _orderRepository.Object,
-            TestMapperFactory.Create());
+        var mock = new Mock<IFlashSalePurchaseStrategy>();
+
+        mock.SetupGet(x => x.Strategy).Returns(strategy);
+
+        mock.Setup(x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()))
+            .ReturnsAsync(result ?? new Order
+            {
+                Id = 1,
+                UserId = 99,
+                ProductId = 1,
+                Quantity = 1,
+                Status = OrderStatus.Completed,
+                CreatedAt = DateTime.UtcNow
+            });
+
+        return mock;
     }
 
     [Fact]
-    public async Task PurchaseAsync_WhenStockIsEnough_ShouldDeductStockAndCreateOrder()
+    public async Task PurchaseAsync_ShouldDispatchToRequestedStrategy()
     {
-        var product = new Product
-        {
-            Id = 1,
-            Name = "iPhone",
-            Price = 30000m,
-            Stock = 10,
-            CreatedAt = DateTime.UtcNow
-        };
+        var atomic = CreateStrategy(FlashSaleStrategy.Atomic);
+        var transaction = CreateStrategy(FlashSaleStrategy.Transaction);
 
-        _productRepository
-            .Setup(x => x.GetByIdAsync(1))
-            .ReturnsAsync(product);
+        var sut = new FlashSaleService(
+            new[] { atomic.Object, transaction.Object },
+            TestMapperFactory.Create());
 
-        Order? created = null;
-
-        _orderRepository
-            .Setup(x => x.CreateAsync(It.IsAny<Order>()))
-            .Callback<Order>(x => created = x)
-            .Returns(Task.CompletedTask);
-
-        var sut = CreateSut();
-
-        var result = await sut.PurchaseAsync(new CreateFlashSaleDtoModel
+        await sut.PurchaseAsync(new CreateFlashSaleDtoModel
         {
             ProductId = 1,
             UserId = 99,
-            Quantity = 3
+            Quantity = 1,
+            Strategy = FlashSaleStrategy.Transaction
         });
 
-        Assert.Equal(7, product.Stock);
-
-        _productRepository.Verify(
-            x => x.UpdateAsync(product),
+        transaction.Verify(
+            x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()),
             Times.Once);
 
-        Assert.NotNull(created);
-        Assert.Equal(1, created!.ProductId);
-        Assert.Equal(99, created.UserId);
-        Assert.Equal(3, created.Quantity);
-        Assert.Equal(OrderStatus.Completed, created.Status);
-
-        Assert.Equal(OrderStatus.Completed, result.Status);
-        Assert.Equal(3, result.Quantity);
+        atomic.Verify(
+            x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()),
+            Times.Never);
     }
 
     [Fact]
-    public async Task PurchaseAsync_WhenStockIsInsufficient_ShouldThrowBusinessException()
+    public async Task PurchaseAsync_ShouldMapOrderEntityToDto()
     {
-        _productRepository
-            .Setup(x => x.GetByIdAsync(1))
-            .ReturnsAsync(new Product { Id = 1, Stock = 1 });
+        var order = new Order
+        {
+            Id = 42,
+            UserId = 7,
+            ProductId = 3,
+            Quantity = 2,
+            Status = OrderStatus.Completed,
+            CreatedAt = DateTime.UtcNow
+        };
 
-        var sut = CreateSut();
+        var atomic = CreateStrategy(FlashSaleStrategy.Atomic, order);
+
+        var sut = new FlashSaleService(
+            new[] { atomic.Object },
+            TestMapperFactory.Create());
+
+        var result = await sut.PurchaseAsync(new CreateFlashSaleDtoModel
+        {
+            ProductId = 3,
+            UserId = 7,
+            Quantity = 2,
+            Strategy = FlashSaleStrategy.Atomic
+        });
+
+        Assert.Equal(42, result.Id);
+        Assert.Equal(7, result.UserId);
+        Assert.Equal(2, result.Quantity);
+        Assert.Equal(OrderStatus.Completed, result.Status);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_WhenStrategyIsNotRegistered_ShouldThrowBusinessException()
+    {
+        var atomic = CreateStrategy(FlashSaleStrategy.Atomic);
+
+        var sut = new FlashSaleService(
+            new[] { atomic.Object },
+            TestMapperFactory.Create());
 
         await Assert.ThrowsAsync<BusinessException>(
             () => sut.PurchaseAsync(new CreateFlashSaleDtoModel
             {
                 ProductId = 1,
-                UserId = 99,
-                Quantity = 2
-            }));
-
-        _productRepository.Verify(
-            x => x.UpdateAsync(It.IsAny<Product>()),
-            Times.Never);
-
-        _orderRepository.Verify(
-            x => x.CreateAsync(It.IsAny<Order>()),
-            Times.Never);
-    }
-
-    [Fact]
-    public async Task PurchaseAsync_WhenProductNotFound_ShouldThrowNotFoundException()
-    {
-        _productRepository
-            .Setup(x => x.GetByIdAsync(It.IsAny<int>()))
-            .ReturnsAsync((Product?)null);
-
-        var sut = CreateSut();
-
-        await Assert.ThrowsAsync<NotFoundException>(
-            () => sut.PurchaseAsync(new CreateFlashSaleDtoModel
-            {
-                ProductId = 404,
-                UserId = 99,
-                Quantity = 1
+                UserId = 1,
+                Quantity = 1,
+                Strategy = FlashSaleStrategy.Optimistic
             }));
     }
 
-    /// <summary>
-    /// Stage 1 的 Baseline 特性：
-    /// 「讀取庫存」與「寫回庫存」之間沒有任何保護。
-    ///
-    /// 這個測試不是在驗證正確行為，而是把 Baseline 的缺陷釘住：
-    /// 兩個各自讀到 Stock = 1 的請求，都會通過檢查並各自建立訂單，
-    /// 最終賣出 2 件。Stage 2 會用 k6 在真實 DB 上重現同一件事。
-    /// </summary>
     [Fact]
-    public async Task PurchaseAsync_WhenTwoRequestsReadSameStock_ShouldOversell()
+    public void DefaultStrategy_ShouldBeAtomic()
     {
-        var snapshotA = new Product { Id = 1, Stock = 1 };
-        var snapshotB = new Product { Id = 1, Stock = 1 };
-
-        _productRepository
-            .SetupSequence(x => x.GetByIdAsync(1))
-            .ReturnsAsync(snapshotA)
-            .ReturnsAsync(snapshotB);
-
-        _orderRepository
-            .Setup(x => x.CreateAsync(It.IsAny<Order>()))
-            .Returns(Task.CompletedTask);
-
-        var sut = CreateSut();
-
-        var dto = new CreateFlashSaleDtoModel
-        {
-            ProductId = 1,
-            UserId = 99,
-            Quantity = 1
-        };
-
-        await sut.PurchaseAsync(dto);
-        await sut.PurchaseAsync(dto);
-
-        // 庫存只有 1，卻建立了 2 筆訂單。
-        _orderRepository.Verify(
-            x => x.CreateAsync(It.IsAny<Order>()),
-            Times.Exactly(2));
+        // Stage 3 的結論：未指定策略時走 Atomic Update。
+        // 這個測試把選定的主要方案釘住，避免日後被無意改掉。
+        Assert.Equal(
+            FlashSaleStrategy.Atomic,
+            new CreateFlashSaleDtoModel().Strategy);
     }
 }

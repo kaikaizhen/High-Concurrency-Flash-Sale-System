@@ -105,6 +105,10 @@ public class ProductServiceTests
             .Setup(x => x.GetByIdAsync(1))
             .ReturnsAsync(product);
 
+        _productRepository
+            .Setup(x => x.TryUpdateWithVersionAsync(product))
+            .ReturnsAsync(true);
+
         var sut = CreateSut();
 
         var result = await sut.UpdateAsync(new UpdateProductDtoModel
@@ -120,9 +124,35 @@ public class ProductServiceTests
         Assert.Equal(50, product.Stock);
 
         _productRepository.Verify(
-            x => x.UpdateAsync(product),
+            x => x.TryUpdateWithVersionAsync(product),
             Times.Once);
 
         Assert.Equal("New", result.Name);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WhenVersionConflicts_ShouldThrowBusinessException()
+    {
+        var product = new Product { Id = 1, Name = "Old", Stock = 5 };
+
+        _productRepository
+            .Setup(x => x.GetByIdAsync(1))
+            .ReturnsAsync(product);
+
+        _productRepository
+            .Setup(x => x.TryUpdateWithVersionAsync(product))
+            .ReturnsAsync(false);
+
+        var sut = CreateSut();
+
+        // 版本衝突是可預期的商業狀況，應回 409 而不是 500
+        await Assert.ThrowsAsync<BusinessException>(
+            () => sut.UpdateAsync(new UpdateProductDtoModel
+            {
+                Id = 1,
+                Name = "New",
+                Price = 200m,
+                Stock = 50
+            }));
     }
 }

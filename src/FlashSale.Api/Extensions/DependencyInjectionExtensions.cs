@@ -3,6 +3,7 @@ using FlashSale.Api.Mappings;
 using FlashSale.Api.Repositories;
 using FlashSale.Api.Repositories.Interfaces;
 using FlashSale.Api.Services;
+using FlashSale.Api.Services.FlashSaleStrategies;
 using FlashSale.Api.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -30,6 +31,22 @@ public static class DependencyInjectionExtensions
         services.AddScoped<IProductService, ProductService>();
         services.AddScoped<IOrderService, OrderService>();
         services.AddScoped<IFlashSaleService, FlashSaleService>();
+
+        RegisterFlashSaleStrategies(services);
+    }
+
+    /// <summary>
+    /// Stage 3：四種併發控制版本並存以便比較。
+    /// FlashSaleService 注入 IEnumerable&lt;IFlashSalePurchaseStrategy&gt; 後
+    /// 依 DtoModel 指定的 Strategy 委派。
+    /// </summary>
+    private static void RegisterFlashSaleStrategies(
+        IServiceCollection services)
+    {
+        services.AddScoped<IFlashSalePurchaseStrategy, BaselineFlashSalePurchaseStrategy>();
+        services.AddScoped<IFlashSalePurchaseStrategy, TransactionFlashSalePurchaseStrategy>();
+        services.AddScoped<IFlashSalePurchaseStrategy, OptimisticFlashSalePurchaseStrategy>();
+        services.AddScoped<IFlashSalePurchaseStrategy, AtomicFlashSalePurchaseStrategy>();
     }
 
     private static void RegisterRepositories(
@@ -37,6 +54,7 @@ public static class DependencyInjectionExtensions
     {
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddScoped<IOrderRepository, OrderRepository>();
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
     }
 
     private static void RegisterDatabase(
