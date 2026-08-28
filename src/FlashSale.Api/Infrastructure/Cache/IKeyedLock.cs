@@ -10,5 +10,14 @@ namespace FlashSale.Api.Infrastructure.Cache;
 /// </summary>
 public interface IKeyedLock
 {
+    /// <param name="key">
+    /// 要保護的資源識別碼，這裡固定就是快取 Key
+    /// （例如 <c>CacheKeys.Product(productId)</c> 產生的 <c>"product:1"</c>）。
+    /// 只有傳入相同 key 的呼叫才會互相排隊；不同 key 完全獨立、互不阻塞。
+    /// </param>
+    /// <returns>
+    /// 代表「持有這把鎖」的 handle，Dispose（搭配 <c>using</c>）時釋放，
+    /// 讓下一個排隊等同一個 key 的請求可以進入。
+    /// </returns>
     Task<IDisposable> AcquireAsync(string key);
 }

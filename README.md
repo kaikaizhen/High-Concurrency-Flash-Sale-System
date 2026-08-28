@@ -26,6 +26,28 @@
 
 ---
 
+## Stage 進度圖
+
+```mermaid
+flowchart LR
+    S1["Stage 1<br/>CRUD Baseline"] --> S2["Stage 2<br/>Race Condition"]
+    S2 --> S3["Stage 3<br/>Concurrency Control"]
+    S3 --> S4["Stage 4<br/>Redis"]
+    S4 --> S5["Stage 5<br/>Message Queue"]
+    S5 --> S6["Stage 6<br/>Idempotency"]
+    S6 --> S7["Stage 7<br/>Rate Limit"]
+    S7 --> S8["Stage 8<br/>Multi Instance"]
+    S8 --> S9["Stage 9<br/>Load Test"]
+    S9 --> S10["Stage 10<br/>Observability"]
+
+    classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
+    classDef todo fill:#495057,stroke:#495057,color:#fff
+    class S1,S2,S3,S4 done
+    class S5,S6,S7,S8,S9,S10 todo
+```
+
+---
+
 ## Git 原則
 
 本專案**只使用本地 Git**，不建立 GitHub Repository、不設定 remote、不執行 push。
@@ -88,6 +110,25 @@ HighConcurrencyFlashSale/
 計畫 §18 規劃的 `FlashSale.Application` / `Domain` / `Infrastructure` / `Worker`
 專案尚未建立 —— 依計畫「目錄與 Infrastructure 應隨著 Stage 演進逐步加入」，
 Stage 5 導入 RabbitMQ Consumer 時才會拆出 `FlashSale.Worker`。
+
+### 三層式架構的資料流
+
+```mermaid
+flowchart LR
+    Client(["Client"]) -->|HTTP| Controller
+    Controller -->|ParamModel → DtoModel| Service
+    Service -->|DtoModel → Entity| Repository
+    Repository --> DB[("SQL Server")]
+    Service -.->|Cache Aside| Redis[("Redis")]
+
+    classDef layer fill:#1971c2,stroke:#1971c2,color:#fff
+    classDef store fill:#495057,stroke:#495057,color:#fff
+    class Controller,Service,Repository layer
+    class DB,Redis store
+```
+
+Controller 只認 ParamModel / ViewModel，Service 承擔商業規則，
+Repository 專責資料存取；Entity 絕不跨出 Repository/Service 邊界外流到 Client。
 
 ---
 
@@ -193,6 +234,44 @@ Base URL：`http://localhost:5080`
 可選 `Baseline` / `Transaction` / `Optimistic` / `Atomic`，用於重跑 Stage 3 的比較。
 
 > `Baseline` 是 Stage 1 的無保護版本，**會超賣**，僅作為對照組保留。
+
+#### 搶購請求流程（以預設的 Atomic 為例）
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant Ctrl as FlashSaleController
+    participant Svc as FlashSaleService
+    participant St as AtomicFlashSalePurchaseStrategy
+    participant DB as SQL Server
+    participant R as Redis
+
+    C->>Ctrl: POST /api/flash-sale/{productId}
+    Ctrl->>Svc: PurchaseAsync(dto)
+    Svc->>St: PurchaseAsync(dto)
+
+    St->>DB: BEGIN TRAN
+    St->>DB: UPDATE Products SET Stock = Stock - qty<br/>WHERE Id = @id AND Stock >= qty
+
+    alt AffectedRows = 1（庫存足夠）
+        St->>DB: INSERT Order
+        St->>DB: COMMIT
+        St-->>Svc: Order
+        Svc->>R: RemoveAsync(product:{id})  ⟵ 使商品快取失效
+        Svc-->>Ctrl: OrderDtoModel
+        Ctrl-->>C: 200 OK
+    else AffectedRows = 0（庫存不足 / 商品不存在）
+        St->>DB: ROLLBACK
+        St-->>Svc: throw BusinessException / NotFoundException
+        Svc-->>Ctrl: (exception)
+        Ctrl-->>C: 409 / 404
+    end
+```
+
+檢查與扣減是**同一個 SQL 語句**，由資料庫的列鎖保證原子性，
+應用程式完全不需要先讀取庫存 —— 這是它比 Transaction / Optimistic 兩版更快的原因。
+只有成交後才清 Redis 快取，失敗（庫存不足）不清，見
+[Stage 4 併發 §6](docs/load-test/redis.md#6-過程中發現並修正的問題)。
 
 ### `GET /api/diagnostics/metrics` / `POST /api/diagnostics/metrics/reset`
 
@@ -300,6 +379,35 @@ Baseline 之所以保留，是為了讓後續 Stage 隨時能重跑比較 ——
 ---
 
 ## Stage 4 Redis 快取
+
+### Cache Aside + Single Flight（`GET /api/products/{id}`）
+
+```mermaid
+flowchart TD
+    A(["GET /api/products/{id}"]) --> B{"Cache.Enabled?"}
+    B -- 否 --> Z["直接查 SQL Server"]
+
+    B -- 是 --> C["讀 Redis"]
+    C -->|Hit：正向值| D["回傳商品"]
+    C -->|"Hit：負向快取（null）"| NF["404 NotFound"]
+    C -->|Miss| E["取得 Key 層級鎖<br/>（KeyedLock，Single Flight）"]
+
+    E --> F["再讀一次 Redis<br/>（double-check）"]
+    F -->|"此時已 Hit<br/>（前面請求已填好）"| D
+    F -->|仍然 Miss| G["查 SQL Server"]
+
+    G -->|找到| H["寫入 Redis<br/>TTL = 10s"] --> D
+    G -->|查無此商品| I["寫入負向快取<br/>TTL = 3s（短）"] --> NF
+
+    classDef hit fill:#2f9e44,stroke:#2f9e44,color:#fff
+    classDef miss fill:#e8590c,stroke:#e8590c,color:#fff
+    class D hit
+    class G,H,I miss
+```
+
+**取得鎖之後必須再讀一次快取**：少了這次 double-check，
+排隊的請求還是會一個個查資料庫，只是從併發變串行，查詢次數不會減少
+（見 [docs/load-test/redis.md §4](docs/load-test/redis.md#4-cache-aside-的實作)）。
 
 ```powershell
 $env:Cache__Enabled="false"   # 或 "true"，重啟 API 後
