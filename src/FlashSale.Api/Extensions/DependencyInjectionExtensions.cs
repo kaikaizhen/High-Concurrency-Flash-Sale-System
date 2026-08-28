@@ -2,6 +2,7 @@ using FlashSale.Api.Data;
 using FlashSale.Api.Data.Interceptors;
 using FlashSale.Api.Infrastructure.Cache;
 using FlashSale.Api.Infrastructure.Diagnostics;
+using FlashSale.Api.Infrastructure.Messaging;
 using FlashSale.Api.Mappings;
 using FlashSale.Api.Options;
 using FlashSale.Api.Repositories;
@@ -53,6 +54,7 @@ public static class DependencyInjectionExtensions
         services.AddScoped<IFlashSalePurchaseStrategy, TransactionFlashSalePurchaseStrategy>();
         services.AddScoped<IFlashSalePurchaseStrategy, OptimisticFlashSalePurchaseStrategy>();
         services.AddScoped<IFlashSalePurchaseStrategy, AtomicFlashSalePurchaseStrategy>();
+        services.AddScoped<IFlashSalePurchaseStrategy, QueuedAtomicFlashSalePurchaseStrategy>();
     }
 
     private static void RegisterRepositories(
@@ -95,6 +97,9 @@ public static class DependencyInjectionExtensions
 
         services.Configure<CacheOptions>(
             configuration.GetSection(CacheOptions.SectionName));
+
+        services.Configure<RabbitMqOptions>(
+            configuration.GetSection(RabbitMqOptions.SectionName));
     }
 
     private static void RegisterInfrastructureServices(
@@ -109,6 +114,30 @@ public static class DependencyInjectionExtensions
         RegisterRedis(services, configuration);
 
         services.AddScoped<ICacheService, RedisCacheService>();
+
+        RegisterMessaging(services);
+    }
+
+    /// <summary>
+    /// Stage 5：RabbitMQ。
+    ///
+    /// 連線是 Singleton（建立成本高，共用一條）；
+    /// Publisher 與 Inspector 每次都會自己借用一個 Channel，
+    /// 因為 IChannel 不是執行緒安全的。
+    /// </summary>
+    private static void RegisterMessaging(IServiceCollection services)
+    {
+        services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
+        services.AddSingleton<IChannelPool, ChannelPool>();
+        services.AddSingleton<RabbitMqTopology>();
+
+        // Publisher 與 Inspector 都是無狀態的 —— 每次呼叫自己借一個 Channel，
+        // 不持有任何跨呼叫的狀態，所以註冊為 Singleton。
+        //
+        // 這也是必要的：Worker 的 OrderCreatedConsumer 是 BackgroundService
+        // （Singleton），Singleton 無法注入 Scoped 服務。
+        services.AddSingleton<IMessagePublisher, RabbitMqMessagePublisher>();
+        services.AddSingleton<IQueueInspector, RabbitMqQueueInspector>();
     }
 
     /// <summary>

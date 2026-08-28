@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-FlashSale.Worker-45b10b46-5fe4-47fb-bbbf-66124d77be23</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FlashSale.Api\FlashSale.Api.csproj" />
+  </ItemGroup>
+
+  <!--
+    Worker 與 API 共用同一份設定檔。
+
+    連線字串、RabbitMQ 端點、佇列名稱只要兩邊有一點不一致，
+    就會出現「訊息發出去了但沒人收」這種最難查的問題。
+    用 Link 而不是各留一份副本，就不會有「改了一邊忘了另一邊」。
+
+    appsettings.Development.json 不進版控（機密），
+    因此設 Condition，檔案不存在時不會導致建置失敗。
+  -->
+  <ItemGroup>
+    <Content Include="..\FlashSale.Api\appsettings.json"
+             Link="appsettings.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\FlashSale.Api\appsettings.Development.json"
+             Link="appsettings.Development.json"
+             CopyToOutputDirectory="PreserveNewest"
+             Condition="Exists('..\FlashSale.Api\appsettings.Development.json')" />
+  </ItemGroup>
+</Project>

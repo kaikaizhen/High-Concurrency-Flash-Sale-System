@@ -41,4 +41,16 @@ public class DiagnosticsController : ControllerBase
 
         return NoContent();
     }
+
+    /// <summary>
+    /// Stage 5：佇列待處理訊息數。用來觀察削峰填谷 ——
+    /// 流量尖峰時這個數字會急速上升，之後由 Worker 以固定速度消化。
+    /// </summary>
+    [HttpGet("queue")]
+    public async Task<ActionResult<QueueMetricsViewModel>> GetQueueMetricsAsync()
+    {
+        var result = await _diagnosticsService.GetQueueMetricsAsync();
+
+        return Ok(_mapper.Map<QueueMetricsViewModel>(result));
+    }
 }

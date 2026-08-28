@@ -52,7 +52,8 @@ public class OptimisticFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Optimistic;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(
+        CreateFlashSaleDtoModel dto)
     {
         for (var attempt = 1;
              attempt <= GlobalConstants.MaxConcurrencyRetryCount;
@@ -62,7 +63,7 @@ public class OptimisticFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
             if (order is not null)
             {
-                return order;
+                return FlashSalePurchaseResult.Completed(order);
             }
         }
 

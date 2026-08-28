@@ -37,7 +37,7 @@ public class FlashSaleService : IFlashSaleService
         _mapper = mapper;
     }
 
-    public async Task<OrderDtoModel> PurchaseAsync(
+    public async Task<FlashSalePurchaseDtoModel> PurchaseAsync(
         CreateFlashSaleDtoModel dto)
     {
         if (!_strategies.TryGetValue(dto.Strategy, out var strategy))
@@ -46,7 +46,7 @@ public class FlashSaleService : IFlashSaleService
                 $"Unsupported flash sale strategy: {dto.Strategy}.");
         }
 
-        var order = await strategy.PurchaseAsync(dto);
+        var result = await strategy.PurchaseAsync(dto);
 
         // 搶購改動了庫存，而商品快取裡存的正是庫存值。
         // 不在這裡清除的話，商品頁在整場秒殺期間都會顯示錯誤的庫存 ——
@@ -56,9 +56,19 @@ public class FlashSaleService : IFlashSaleService
         // 而讀取次數通常高出好幾個數量級。
         //
         // 清除後的下一波讀取會同時 Miss，由 Single Flight 收斂成一次查詢。
+        //
+        // 非同步路徑同樣要清 —— 庫存在 API 這一端就已經扣掉了，
+        // 尚未建立的只有訂單。
         await InvalidateProductCacheAsync(dto.ProductId);
 
-        return _mapper.Map<OrderDtoModel>(order);
+        return new FlashSalePurchaseDtoModel
+        {
+            IsQueued = result.IsQueued,
+            RequestId = result.RequestId,
+            Order = result.Order is null
+                ? null
+                : _mapper.Map<OrderDtoModel>(result.Order)
+        };
     }
 
     private async Task InvalidateProductCacheAsync(int productId)

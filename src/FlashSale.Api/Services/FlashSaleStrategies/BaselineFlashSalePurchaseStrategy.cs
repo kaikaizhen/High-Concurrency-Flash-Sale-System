@@ -33,7 +33,7 @@ public class BaselineFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Baseline;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         var product = await _productRepository.GetByIdAsync(dto.ProductId);
 
@@ -65,6 +65,6 @@ public class BaselineFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
         await _orderRepository.CreateAsync(order);
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

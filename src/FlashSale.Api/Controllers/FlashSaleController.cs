@@ -1,7 +1,7 @@
 using AutoMapper;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Params.FlashSales;
-using FlashSale.Api.Models.ViewModels.Orders;
+using FlashSale.Api.Models.ViewModels.FlashSales;
 using FlashSale.Api.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
@@ -23,7 +23,9 @@ public class FlashSaleController : ControllerBase
     }
 
     [HttpPost("{productId:int}")]
-    public async Task<ActionResult<OrderViewModel>> PurchaseAsync(
+    [ProducesResponseType(typeof(FlashSaleResultViewModel), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(FlashSaleResultViewModel), StatusCodes.Status202Accepted)]
+    public async Task<ActionResult<FlashSaleResultViewModel>> PurchaseAsync(
         int productId,
         [FromBody] CreateFlashSaleParamModel param)
     {
@@ -33,8 +35,12 @@ public class FlashSaleController : ControllerBase
 
         var result = await _flashSaleService.PurchaseAsync(dto);
 
-        var viewModel = _mapper.Map<OrderViewModel>(result);
+        var viewModel = _mapper.Map<FlashSaleResultViewModel>(result);
 
-        return Ok(viewModel);
+        // 202 Accepted 表達的是「已受理，但還沒做完」。
+        // 非同步路徑回 200 會讓客戶端誤以為訂單已經存在。
+        return result.IsQueued
+            ? Accepted(viewModel)
+            : Ok(viewModel);
     }
 }

@@ -43,7 +43,7 @@ public class TransactionFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Transaction;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         await using var transaction = await _unitOfWork.BeginTransactionAsync();
 
@@ -77,6 +77,6 @@ public class TransactionFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
         await transaction.CommitAsync();
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

@@ -9,5 +9,6 @@ public class DiagnosticsProfile : Profile
     public DiagnosticsProfile()
     {
         CreateMap<MetricsDtoModel, MetricsViewModel>();
+        CreateMap<QueueMetricsDtoModel, QueueMetricsViewModel>();
     }
 }

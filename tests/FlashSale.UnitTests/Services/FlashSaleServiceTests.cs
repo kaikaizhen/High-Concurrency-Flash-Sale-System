@@ -48,7 +48,7 @@ public class FlashSaleServiceTests
         mock.SetupGet(x => x.Strategy).Returns(strategy);
 
         mock.Setup(x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()))
-            .ReturnsAsync(result ?? new Order
+            .ReturnsAsync(FlashSalePurchaseResult.Completed(result ?? new Order
             {
                 Id = 1,
                 UserId = 99,
@@ -56,7 +56,22 @@ public class FlashSaleServiceTests
                 Quantity = 1,
                 Status = OrderStatus.Completed,
                 CreatedAt = DateTime.UtcNow
-            });
+            }));
+
+        return mock;
+    }
+
+    /// <summary>Stage 5：回傳「已排入佇列、訂單尚未建立」的策略。</summary>
+    private static Mock<IFlashSalePurchaseStrategy> CreateQueuedStrategy(
+        FlashSaleStrategy strategy,
+        Guid requestId)
+    {
+        var mock = new Mock<IFlashSalePurchaseStrategy>();
+
+        mock.SetupGet(x => x.Strategy).Returns(strategy);
+
+        mock.Setup(x => x.PurchaseAsync(It.IsAny<CreateFlashSaleDtoModel>()))
+            .ReturnsAsync(FlashSalePurchaseResult.Queued(requestId));
 
         return mock;
     }
@@ -111,10 +126,67 @@ public class FlashSaleServiceTests
             Strategy = FlashSaleStrategy.Atomic
         });
 
-        Assert.Equal(42, result.Id);
-        Assert.Equal(7, result.UserId);
-        Assert.Equal(2, result.Quantity);
-        Assert.Equal(OrderStatus.Completed, result.Status);
+        Assert.False(result.IsQueued);
+        Assert.NotNull(result.Order);
+        Assert.Equal(42, result.Order!.Id);
+        Assert.Equal(7, result.Order.UserId);
+        Assert.Equal(2, result.Order.Quantity);
+        Assert.Equal(OrderStatus.Completed, result.Order.Status);
+    }
+
+    // ------------------------------------------------------------------
+    // Stage 5 — 非同步路徑
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task PurchaseAsync_WhenStrategyQueues_ShouldReturnQueuedResultWithoutOrder()
+    {
+        var requestId = Guid.NewGuid();
+
+        var queued = CreateQueuedStrategy(
+            FlashSaleStrategy.AtomicQueued,
+            requestId);
+
+        var sut = CreateSut(queued.Object);
+
+        var result = await sut.PurchaseAsync(new CreateFlashSaleDtoModel
+        {
+            ProductId = 3,
+            UserId = 7,
+            Quantity = 1,
+            Strategy = FlashSaleStrategy.AtomicQueued
+        });
+
+        Assert.True(result.IsQueued);
+        Assert.Equal(requestId, result.RequestId);
+
+        // 訂單此刻還不存在。回一個 Id = 0 的假訂單會讓呼叫端
+        // 無法分辨「還沒建立」與「建立失敗」。
+        Assert.Null(result.Order);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_WhenStrategyQueues_ShouldStillInvalidateProductCache()
+    {
+        var queued = CreateQueuedStrategy(
+            FlashSaleStrategy.AtomicQueued,
+            Guid.NewGuid());
+
+        var sut = CreateSut(queued.Object);
+
+        await sut.PurchaseAsync(new CreateFlashSaleDtoModel
+        {
+            ProductId = 7,
+            UserId = 1,
+            Quantity = 1,
+            Strategy = FlashSaleStrategy.AtomicQueued
+        });
+
+        // 庫存在 API 這一端就已經扣掉了，尚未建立的只有訂單，
+        // 所以商品快取一樣必須失效。
+        _cache.Verify(
+            x => x.RemoveAsync(CacheKeys.Product(7)),
+            Times.Once);
     }
 
     [Fact]
