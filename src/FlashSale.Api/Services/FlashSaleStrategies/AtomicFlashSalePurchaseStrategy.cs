@@ -47,7 +47,7 @@ public class AtomicFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Atomic;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         await using var transaction = await _unitOfWork.BeginTransactionAsync();
 
@@ -81,6 +81,6 @@ public class AtomicFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
         await transaction.CommitAsync();
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

@@ -27,6 +27,11 @@ builder.Services.AddApplicationDependencies(
 
 var app = builder.Build();
 
+// Stage 5：宣告 RabbitMQ 拓撲。
+// AMQP 的宣告是冪等的，API 與 Worker 兩邊都會做一次，誰先啟動都不影響。
+// Broker 不可用時只記錄錯誤，不阻擋啟動 —— 同步路徑不需要它。
+await app.Services.DeclareMessagingTopologyAsync();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

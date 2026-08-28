@@ -27,5 +27,12 @@ public enum FlashSaleStrategy
     /// <summary>
     /// Version C：Atomic Update（在資料庫端做減法，以 AffectedRows 判斷）。
     /// </summary>
-    Atomic = 3
+    Atomic = 3,
+
+    /// <summary>
+    /// Stage 5：Atomic Update 扣庫存（仍然同步），訂單建立交給 RabbitMQ Worker。
+    ///
+    /// 回應為 202 Accepted，此時訂單尚未寫入資料庫。
+    /// </summary>
+    AtomicQueued = 4
 }

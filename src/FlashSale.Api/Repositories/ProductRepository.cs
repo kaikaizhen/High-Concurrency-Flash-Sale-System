@@ -86,6 +86,14 @@ public class ProductRepository : IProductRepository
               AND Stock >= {quantity}");
     }
 
+    public async Task RestoreStockAsync(int productId, int quantity)
+    {
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync($@"
+            UPDATE Products
+            SET Stock = Stock + {quantity}
+            WHERE Id = {productId}");
+    }
+
     public async Task OverwriteStockWithoutVersionCheckAsync(
         int productId,
         int stock)

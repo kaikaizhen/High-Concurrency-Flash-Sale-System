@@ -7,4 +7,6 @@ public interface IDiagnosticsService
     MetricsDtoModel GetMetrics();
 
     void ResetMetrics();
+
+    Task<QueueMetricsDtoModel> GetQueueMetricsAsync();
 }

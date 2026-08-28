@@ -49,6 +49,15 @@ public interface IProductRepository
     /// <returns>影響列數。1 = 扣減成功；0 = 庫存不足或商品不存在。</returns>
     Task<int> TryDeductStockAsync(int productId, int quantity);
 
+    /// <summary>
+    /// 把先前扣掉的庫存加回去（補償用）：
+    /// <c>UPDATE Products SET Stock = Stock + @quantity WHERE Id = @id</c>
+    ///
+    /// 沒有條件判斷 —— 呼叫端已經確認扣減成功過，這裡只是把它還原。
+    /// Stage 5 在「庫存已扣減但訊息發布失敗」時使用。
+    /// </summary>
+    Task RestoreStockAsync(int productId, int quantity);
+
     // --- Stage 1 Baseline 對照組 ---
 
     /// <summary>

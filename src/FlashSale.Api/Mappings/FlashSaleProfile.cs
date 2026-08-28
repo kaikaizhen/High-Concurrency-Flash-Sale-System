@@ -1,6 +1,7 @@
 using AutoMapper;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Params.FlashSales;
+using FlashSale.Api.Models.ViewModels.FlashSales;
 
 namespace FlashSale.Api.Mappings;
 
@@ -14,5 +15,10 @@ public class FlashSaleProfile : Profile
             .ForMember(
                 dest => dest.ProductId,
                 opt => opt.Ignore());
+
+        CreateMap<FlashSalePurchaseDtoModel, FlashSaleResultViewModel>()
+            .ForMember(
+                dest => dest.Status,
+                opt => opt.MapFrom(src => src.IsQueued ? "Queued" : "Completed"));
     }
 }

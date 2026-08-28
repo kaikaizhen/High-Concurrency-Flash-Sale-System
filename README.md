@@ -17,7 +17,7 @@
 | 2. Race Condition | `feature/race-condition` | ✅ 完成 — [結果](docs/load-test/race-condition.md) |
 | 3. Concurrency Control | `feature/concurrency-control` | ✅ 完成 — [比較](docs/concurrency-comparison.md) |
 | 4. Redis | `feature/redis` | ✅ 完成 — [結果](docs/load-test/redis.md) |
-| 5. Message Queue | `feature/message-queue` | 未開始 |
+| 5. Message Queue | `feature/message-queue` | ✅ 完成 — [結果](docs/load-test/queue.md) |
 | 6. Idempotency | `feature/idempotency` | 未開始 |
 | 7. Rate Limit | `feature/rate-limit` | 未開始 |
 | 8. Multi Instance | `feature/multi-instance` | 未開始 |
@@ -42,8 +42,8 @@ flowchart LR
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
     classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4 done
-    class S5,S6,S7,S8,S9,S10 todo
+    class S1,S2,S3,S4,S5 done
+    class S6,S7,S8,S9,S10 todo
 ```
 
 ---
@@ -86,30 +86,35 @@ Example 檔已預留 `Redis` 與 `RabbitMq` 區塊，Stage 4 / Stage 5 會用到
 ```text
 HighConcurrencyFlashSale/
 │
-├── src/FlashSale.Api/          # Controller → Service → Repository → Database
-│   ├── Controllers/
-│   ├── Services/  (+ Interfaces/)
-│   ├── Repositories/  (+ Interfaces/)
-│   ├── Models/  Entities / Dtos / Params / ViewModels
-│   ├── Mappings/               # AutoMapper Profile
-│   ├── Data/                   # AppDbContext / Configurations / Migrations
-│   ├── Common/                 # Enums / Constants / Exceptions
-│   ├── Infrastructure/         # Cache (Redis) / Diagnostics —— 外部 I/O
-│   ├── Options/                # RedisOptions / CacheOptions
-│   ├── Extensions/             # DependencyInjectionExtensions
-│   ├── Middlewares/            # GlobalExceptionMiddleware
-│   └── Program.cs
+├── src/
+│   ├── FlashSale.Api/          # Controller → Service → Repository → Database
+│   │   ├── Controllers/
+│   │   ├── Services/  (+ Interfaces/ + FlashSaleStrategies/)
+│   │   ├── Repositories/  (+ Interfaces/)
+│   │   ├── Models/  Entities / Dtos / Params / ViewModels / Messages
+│   │   ├── Mappings/           # AutoMapper Profile
+│   │   ├── Data/               # AppDbContext / Configurations / Migrations / Interceptors
+│   │   ├── Common/             # Enums / Constants / Exceptions
+│   │   ├── Infrastructure/     # Cache (Redis) / Messaging (RabbitMQ) / Diagnostics
+│   │   ├── Options/            # Redis / Cache / RabbitMq
+│   │   ├── Extensions/         # DependencyInjectionExtensions
+│   │   ├── Middlewares/        # GlobalExceptionMiddleware
+│   │   └── Program.cs
+│   │
+│   └── FlashSale.Worker/       # RabbitMQ Consumer（Stage 5 起）
+│       └── OrderCreatedConsumer.cs
 │
 ├── tests/
 │   ├── FlashSale.UnitTests/
 │   └── load/k6/                # k6 腳本與 PowerShell 執行器
 ├── docs/
-└── docker-compose.yml          # redis（後續 Stage 會再加 rabbitmq / nginx）
+└── docker-compose.yml          # redis + rabbitmq（Stage 8 會再加 nginx）
 ```
 
-計畫 §18 規劃的 `FlashSale.Application` / `Domain` / `Infrastructure` / `Worker`
-專案尚未建立 —— 依計畫「目錄與 Infrastructure 應隨著 Stage 演進逐步加入」，
-Stage 5 導入 RabbitMQ Consumer 時才會拆出 `FlashSale.Worker`。
+計畫 §18 規劃的 `FlashSale.Application` / `Domain` / `Infrastructure` 專案尚未建立 ——
+依計畫「目錄與 Infrastructure 應隨著 Stage 演進逐步加入」，
+目前 `FlashSale.Worker` 直接參考 `FlashSale.Api` 以共用 Entity、
+Repository 與 Messaging。若專案再長大，該把共用部分抽成獨立的類別庫。
 
 ### 三層式架構的資料流
 
@@ -139,6 +144,7 @@ Repository 專責資料存取；Entity 絕不跨出 Repository/Service 邊界外
 - .NET 9 SDK
 - 可連線的 SQL Server
 - 可連線的 Redis（`docker compose up -d redis` 可起一個本機的）
+- 可連線的 RabbitMQ（`docker compose up -d rabbitmq`），AMQP 埠 **5672**
 - k6（壓測用）：`winget install --id GrafanaLabs.k6`
 
 ### 建立資料庫
@@ -158,6 +164,16 @@ dotnet run --project src/FlashSale.Api/FlashSale.Api.csproj --no-launch-profile 
 ```
 
 Swagger UI：<http://localhost:5080/swagger>
+
+Stage 5 的非同步搶購還需要啟動 Worker（另一個終端機）：
+
+```bash
+$env:DOTNET_ENVIRONMENT="Development"
+dotnet run -c Release --no-build --project src/FlashSale.Worker/FlashSale.Worker.csproj --no-launch-profile
+```
+
+> Worker 建置時會連帶重建 API 專案，若 API 正在執行會鎖住檔案。
+> 先 `dotnet build -c Release` 一次，再用 `--no-build` 啟動兩者。
 
 ### 測試
 
@@ -223,15 +239,23 @@ Base URL：`http://localhost:5080`
 { "userId": 1, "quantity": 1, "strategy": "Atomic" }
 ```
 
-| 狀況 | HTTP |
-|---|---|
-| 成功 | `200` + OrderViewModel |
-| 商品不存在 | `404` |
-| 庫存不足 | `409` |
-| 樂觀鎖重試用盡 | `409` |
+| 狀況 | HTTP | 回應 |
+|---|---|---|
+| 成功（同步） | `200` | `status: "Completed"` + `order` |
+| 成功（非同步） | `202` | `status: "Queued"` + `requestId`，`order` 為 `null` |
+| 商品不存在 | `404` | |
+| 庫存不足 | `409` | |
+| 樂觀鎖重試用盡 | `409` | |
+
+```json
+{ "status": "Queued", "requestId": "d5455cdc-...", "order": null }
+```
 
 `strategy` 為選填，預設 `Atomic`（Stage 3 選定的主要方案）。
-可選 `Baseline` / `Transaction` / `Optimistic` / `Atomic`，用於重跑 Stage 3 的比較。
+可選 `Baseline` / `Transaction` / `Optimistic` / `Atomic` / `AtomicQueued`。
+
+`AtomicQueued` 是 Stage 5 的非同步版本：庫存仍然同步扣減，
+訂單交由 Worker 建立，因此回 `202` 且此刻資料庫裡還沒有訂單。
 
 > `Baseline` 是 Stage 1 的無保護版本，**會超賣**，僅作為對照組保留。
 
@@ -284,6 +308,14 @@ sequenceDiagram
 `dbCommands` 由 EF Core Interceptor 累加，是實際值而非估算。
 
 > 計數器存在單一 Instance 的記憶體中，Stage 8 導入多 Instance 後需要改寫。
+
+### `GET /api/diagnostics/queue`
+
+Stage 5：佇列待處理訊息數，用來觀察削峰填谷。
+
+```json
+{ "pendingOrders": 2470, "pendingRetries": 0, "deadLettered": 0, "available": true }
+```
 
 ### 錯誤格式
 
@@ -429,3 +461,60 @@ $env:Cache__Enabled="false"   # 或 "true"，重啟 API 後
 | Cache Penetration（查不存在的 Id） | 5000 | **200**（負向快取） |
 
 完整分析：[docs/load-test/redis.md](docs/load-test/redis.md)
+
+---
+
+## Stage 5 Message Queue
+
+搶購改為：**同步扣庫存 → 發布事件 → 202 Accepted**，訂單由 Worker 建立。
+
+```mermaid
+flowchart LR
+    C(["Client"]) -->|POST| API
+    API -->|"UPDATE Stock<br/>（同步，決定成敗）"| DB[("SQL Server")]
+    API -->|"publish<br/>OrderCreated"| MQ["flashsale.orders"]
+    API -->|202 Accepted| C
+
+    MQ --> W["Order Worker"]
+    W -->|INSERT Order| DB
+    W -->|"可重試失敗"| R["retry queue<br/>TTL 5s"]
+    R -.->|TTL 到期送回| MQ
+    W -->|"無法解析 /<br/>重試用盡"| DLQ["dead letter queue"]
+
+    classDef svc fill:#1971c2,stroke:#1971c2,color:#fff
+    classDef store fill:#495057,stroke:#495057,color:#fff
+    classDef bad fill:#c92a2a,stroke:#c92a2a,color:#fff
+    class API,W svc
+    class DB,MQ,R store
+    class DLQ bad
+```
+
+**扣庫存不能非同步** —— 它是唯一決定「有沒有買到」的判斷。
+先回「成功」再發現賣完，是把超賣從資料錯誤變成對客戶的謊言。
+
+```powershell
+.\tests\load\k6\Run-QueueTest.ps1 -Strategy Atomic       -Stock 5000 -Iterations 5000
+.\tests\load\k6\Run-QueueTest.ps1 -Strategy AtomicQueued -Stock 5000 -Iterations 5000
+```
+
+| | 同步 | 非同步 |
+|---|---:|---:|
+| API 回應完畢 | 45.1s | 48.6s |
+| API RPS | 112 | 104 |
+| P99 | 4692 ms | **3067 ms** |
+| **資料庫命令數** | 10003 | **5013** |
+
+**API 並沒有變快** —— 瓶頸仍是庫存那一列的排隊，而發布訊息本身也要一次遠端往返。
+賺到的是資料庫寫入量減半，以及 API 與訂單處理速度的解耦：
+
+| Worker 每筆處理 | API 回應完畢 | API RPS | 佇列峰值 | 訂單全部落地 |
+|---|---:|---:|---:|---:|
+| 正常 | 48.6s | 104 | 2470 | 69.8s |
+| **100 ms** | **45.8s** | **110** | **4642** | ~590s |
+
+**Worker 慢了 27 倍，API 完全不受影響。** 這就是削峰填谷。
+
+> ⚠️ 本階段引入了**重複訂單**的可能（RabbitMQ 是 at-least-once），
+> 刻意留給 Stage 6 用 `MessageId` 解決。
+
+完整分析：[docs/load-test/queue.md](docs/load-test/queue.md)
