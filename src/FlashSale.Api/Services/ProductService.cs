@@ -73,7 +73,17 @@ public class ProductService : IProductService
         entity.Price = dto.Price;
         entity.Stock = dto.Stock;
 
-        await _productRepository.UpdateAsync(entity);
+        // 加入 rowversion 之後，這裡的更新也會帶版本檢查。
+        // 若在讀取與寫入之間有人改過這筆商品（例如同時進行的搶購），
+        // 這次更新會失敗 —— 這是正確行為，不該讓它變成 500。
+        var updated = await _productRepository
+            .TryUpdateWithVersionAsync(entity);
+
+        if (!updated)
+        {
+            throw new BusinessException(
+                "Product was modified by another request, please retry.");
+        }
 
         return _mapper.Map<ProductDtoModel>(entity);
     }

@@ -15,7 +15,7 @@
 |---|---|---|
 | 1. CRUD Baseline | `feature/crud` | ✅ 完成 |
 | 2. Race Condition | `feature/race-condition` | ✅ 完成 — [結果](docs/load-test/race-condition.md) |
-| 3. Concurrency Control | `feature/concurrency-control` | 未開始 |
+| 3. Concurrency Control | `feature/concurrency-control` | ✅ 完成 — [比較](docs/concurrency-comparison.md) |
 | 4. Redis | `feature/redis` | 未開始 |
 | 5. Message Queue | `feature/message-queue` | 未開始 |
 | 6. Idempotency | `feature/idempotency` | 未開始 |
@@ -169,10 +169,10 @@ Base URL：`http://localhost:5080`
 
 ### `POST /api/flash-sale/{productId}`
 
-搶購。**檢查庫存 → 扣庫存 → 建立訂單（`Completed`）**。
+搶購。**扣庫存 → 建立訂單（`Completed`）**，兩者在同一個交易內。
 
 ```json
-{ "userId": 1, "quantity": 1 }
+{ "userId": 1, "quantity": 1, "strategy": "Atomic" }
 ```
 
 | 狀況 | HTTP |
@@ -180,6 +180,12 @@ Base URL：`http://localhost:5080`
 | 成功 | `200` + OrderViewModel |
 | 商品不存在 | `404` |
 | 庫存不足 | `409` |
+| 樂觀鎖重試用盡 | `409` |
+
+`strategy` 為選填，預設 `Atomic`（Stage 3 選定的主要方案）。
+可選 `Baseline` / `Transaction` / `Optimistic` / `Atomic`，用於重跑 Stage 3 的比較。
+
+> `Baseline` 是 Stage 1 的無保護版本，**會超賣**，僅作為對照組保留。
 
 ### 錯誤格式
 
@@ -212,9 +218,9 @@ Base URL：`http://localhost:5080`
 
 符合預期。
 
-### Baseline 的已知缺陷（刻意保留）
+### Baseline 的已知缺陷（Stage 3 起改為對照組保留）
 
-[FlashSaleService.PurchaseAsync](src/FlashSale.Api/Services/FlashSaleService.cs)
+[BaselineFlashSalePurchaseStrategy](src/FlashSale.Api/Services/FlashSaleStrategies/BaselineFlashSalePurchaseStrategy.cs)
 使用一般 CRUD 思維：
 
 ```text
@@ -225,8 +231,9 @@ Read Product → Stock > 0 ? → Stock-- → Update → Create Order
 Transaction、Lock、Atomic Update 或版本控制。**依序**送出請求不會出錯，
 但**併發**送出時多個請求會讀到同一個庫存值，各自通過檢查後各自建單 —— 造成超賣。
 
-這是刻意的。Stage 2 已用 k6 證明它，Stage 3 才修正。
-**在 Stage 3 之前請勿在此加入併發控制。**
+Stage 2 已用 k6 證明它，Stage 3 已提供三種正確解法並選定 Atomic Update。
+Baseline 之所以保留，是為了讓後續 Stage 隨時能重跑比較 ——
+它**永遠不會是預設路徑**，只有明確指定 `"strategy": "Baseline"` 才會走到。
 
 ---
 
@@ -248,3 +255,25 @@ Transaction、Lock、Atomic Update 或版本控制。**依序**送出請求不�
 ```
 
 完整紀錄與原因分析：[docs/load-test/race-condition.md](docs/load-test/race-condition.md)
+
+---
+
+## Stage 3 併發控制比較
+
+```powershell
+.\tests\load\k6\Run-ConcurrencyComparison.ps1 -Stock 100  -Iterations 5000 -Vus 200
+.\tests\load\k6\Run-ConcurrencyComparison.ps1 -Stock 5000 -Iterations 5000 -Vus 200
+```
+
+秒殺情境（庫存 100、5000 個請求、200 個同時連線）：
+
+| 方法 | Orders | Stock | 正確性 | RPS | P95 |
+|---|---:|---:|:---:|---:|---:|
+| Baseline | 5000 | 9 | ❌ 超賣 4900 | 213 | 1212 ms |
+| Transaction (UPDLOCK) | 100 | 0 | ✅ | 807 | 347 ms |
+| Optimistic (rowversion) | 100 | 0 | ✅ | 489 | 2858 ms |
+| **Atomic Update** | 100 | 0 | ✅ | **1122** | **250 ms** |
+
+**選定方案：Atomic Update**，為 `strategy` 未指定時的預設值。
+
+完整比較與取捨分析：[docs/concurrency-comparison.md](docs/concurrency-comparison.md)

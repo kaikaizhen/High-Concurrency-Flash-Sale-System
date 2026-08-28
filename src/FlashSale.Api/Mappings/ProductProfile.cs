@@ -18,13 +18,16 @@ public class ProductProfile : Profile
                 dest => dest.Id,
                 opt => opt.Ignore());
 
-        // Id 由資料庫產生、CreatedAt 由 Service 設定。
+        // Id 與 RowVersion 由資料庫產生、CreatedAt 由 Service 設定。
         CreateMap<CreateProductDtoModel, Product>()
             .ForMember(
                 dest => dest.Id,
                 opt => opt.Ignore())
             .ForMember(
                 dest => dest.CreatedAt,
+                opt => opt.Ignore())
+            .ForMember(
+                dest => dest.RowVersion,
                 opt => opt.Ignore());
 
         CreateMap<Product, ProductDtoModel>();
