@@ -14,7 +14,7 @@
 | Stage | Branch | 狀態 |
 |---|---|---|
 | 1. CRUD Baseline | `feature/crud` | ✅ 完成 |
-| 2. Race Condition | `feature/race-condition` | 未開始 |
+| 2. Race Condition | `feature/race-condition` | ✅ 完成 — [結果](docs/load-test/race-condition.md) |
 | 3. Concurrency Control | `feature/concurrency-control` | 未開始 |
 | 4. Redis | `feature/redis` | 未開始 |
 | 5. Message Queue | `feature/message-queue` | 未開始 |
@@ -225,5 +225,26 @@ Read Product → Stock > 0 ? → Stock-- → Update → Create Order
 Transaction、Lock、Atomic Update 或版本控制。**依序**送出請求不會出錯，
 但**併發**送出時多個請求會讀到同一個庫存值，各自通過檢查後各自建單 —— 造成超賣。
 
-這是刻意的。Stage 2 會用 k6 證明它，Stage 3 才修正。
+這是刻意的。Stage 2 已用 k6 證明它，Stage 3 才修正。
 **在 Stage 3 之前請勿在此加入併發控制。**
+
+---
+
+## Stage 2 壓力測試
+
+```powershell
+# 前置：k6（winget install --id GrafanaLabs.k6）
+# 需要 API 已在 http://localhost:5080 執行
+
+.\tests\load\k6\Run-RaceCondition.ps1 -Stock 100 -Vus 10,100,500,1000
+.\tests\load\k6\Run-RaceCondition.ps1 -Stock 10 -Vus 100
+```
+
+結果摘要（庫存 10 件、100 個併發請求）：
+
+```text
+依序送出   ->  Orders = 10   Stock = 0    Rejected = 90   正確
+併發送出   ->  Orders = 100  Stock = 7    Rejected = 0    超賣 90 件
+```
+
+完整紀錄與原因分析：[docs/load-test/race-condition.md](docs/load-test/race-condition.md)
