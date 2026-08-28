@@ -1,0 +1,26 @@
+using FlashSale.Api.Models.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace FlashSale.Api.Data;
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(
+        DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<Product> Products => Set<Product>();
+
+    public DbSet<Order> Orders => Set<Order>();
+
+    protected override void OnModelCreating(
+        ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfigurationsFromAssembly(
+            typeof(AppDbContext).Assembly);
+
+        base.OnModelCreating(modelBuilder);
+    }
+}
