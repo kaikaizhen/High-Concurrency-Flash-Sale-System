@@ -15,6 +15,9 @@ public class AppDbContext : DbContext
 
     public DbSet<Order> Orders => Set<Order>();
 
+    public DbSet<IdempotencyRecord> IdempotencyRecords =>
+        Set<IdempotencyRecord>();
+
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {

@@ -42,6 +42,12 @@ public class FlashSaleStrategyTests
         _orderRepository
             .Setup(x => x.CreateAsync(It.IsAny<Order>()))
             .Returns(Task.CompletedTask);
+
+        // Stage 6：同步策略改用 TryCreateAsync，
+        // 預設回傳 true（沒有重複的 IdempotencyKey）。
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .ReturnsAsync(true);
     }
 
     private static CreateFlashSaleDtoModel Dto(int quantity = 1)
@@ -266,6 +272,51 @@ public class FlashSaleStrategyTests
     }
 
     [Fact]
+    public async Task Atomic_WhenIdempotencyKeyAlreadyUsed_ShouldRollbackStockAndThrow()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        // 資料庫的篩選唯一索引擋下重複的 IdempotencyKey
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .ReturnsAsync(false);
+
+        await Assert.ThrowsAsync<BusinessException>(
+            () => CreateAtomicSut().PurchaseAsync(Dto()));
+
+        // 庫存在建單之前就扣掉了，但這次沒有真的賣出東西 —— 必須還原。
+        // 少了這個 Rollback，每一次重複請求都會憑空少掉一件庫存。
+        _transaction.Verify(x => x.RollbackAsync(), Times.Once);
+        _transaction.Verify(x => x.CommitAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task Atomic_ShouldWriteIdempotencyKeyOntoOrder()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        Order? created = null;
+
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .Callback<Order>(o => created = o)
+            .ReturnsAsync(true);
+
+        var dto = Dto();
+        dto.IdempotencyKey = "client-key-1";
+
+        await CreateAtomicSut().PurchaseAsync(dto);
+
+        // Key 必須落到訂單上，資料庫的唯一索引才有東西可以擋
+        Assert.NotNull(created);
+        Assert.Equal("client-key-1", created!.IdempotencyKey);
+    }
+
+    [Fact]
     public async Task Atomic_WhenNoRowAffectedAndProductExists_ShouldThrowInsufficientStock()
     {
         _productRepository
@@ -441,6 +492,9 @@ public class FlashSaleStrategyTests
         Assert.Equal(99, published.UserId);
         Assert.Equal(result.RequestId, published.MessageId);
 
+        // 沒帶客戶端 Key 時退回 MessageId
+        Assert.Equal(published.MessageId.ToString(), published.IdempotencyKey);
+
         // 訂單建立完全移出請求路徑 —— 這正是本階段要省下的工作
         _orderRepository.Verify(
             x => x.CreateAsync(It.IsAny<Order>()),
@@ -517,6 +571,38 @@ public class FlashSaleStrategyTests
         _productRepository.Verify(
             x => x.RestoreStockAsync(It.IsAny<int>(), It.IsAny<int>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task Queued_WhenClientProvidesKey_ShouldUseItInsteadOfMessageId()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        OrderCreatedMessage? published = null;
+
+        _publisher
+            .Setup(x => x.PublishAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<OrderCreatedMessage>(),
+                It.IsAny<IDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, OrderCreatedMessage, IDictionary<string, object?>?, CancellationToken>(
+                (_, _, msg, _, _) => published = msg)
+            .Returns(Task.CompletedTask);
+
+        var dto = Dto();
+        dto.IdempotencyKey = "client-key-1";
+
+        await CreateQueuedSut().PurchaseAsync(dto);
+
+        // 客戶端重送時 API 會產生新的 MessageId，
+        // 只有客戶端的 Key 能讓 Worker 認出「這是同一筆訂單」。
+        Assert.NotNull(published);
+        Assert.Equal("client-key-1", published!.IdempotencyKey);
+        Assert.NotEqual(published.MessageId.ToString(), published.IdempotencyKey);
     }
 
     [Fact]

@@ -178,19 +178,37 @@ public class OrderCreatedConsumer : BackgroundService
         var orderRepository = scope.ServiceProvider
             .GetRequiredService<IOrderRepository>();
 
-        // 注意：這裡沒有做去重。
+        // Stage 6：以 MessageId 去重。
         //
         // RabbitMQ 保證的是 at-least-once —— 重試、Worker 在 ACK 前崩潰、
-        // 網路重送，都會讓同一則訊息被消費兩次，於是產生重複訂單。
-        // Stage 6 (Idempotency) 會用 MessageId 解決這件事。
-        await orderRepository.CreateAsync(new Order
+        // 網路重送，都會讓同一則訊息被消費兩次。
+        //
+        // 去重不是「先查有沒有再新增」（併發下兩個都會通過查詢），
+        // 而是把 MessageId 寫進 Order.IdempotencyKey，
+        // 由資料庫的篩選唯一索引擋掉第二筆。
+        var created = await orderRepository.TryCreateAsync(new Order
         {
             UserId = message.UserId,
             ProductId = message.ProductId,
             Quantity = message.Quantity,
             Status = OrderStatus.Completed,
-            CreatedAt = message.OccurredAt
+            CreatedAt = message.OccurredAt,
+
+            // 用訊息帶來的 Key（客戶端的 Idempotency-Key，或退回 MessageId），
+            // 而不是 MessageId 本身 —— 見 OrderCreatedMessage.IdempotencyKey 的說明。
+            IdempotencyKey = string.IsNullOrWhiteSpace(message.IdempotencyKey)
+                ? message.MessageId.ToString()
+                : message.IdempotencyKey
         });
+
+        if (!created)
+        {
+            // 重複投遞。訂單早就建好了，這不是錯誤 ——
+            // 直接視為成功並 ACK，否則會無限重試一則永遠「失敗」的訊息。
+            _logger.LogInformation(
+                "Duplicate message ignored, order already exists. MessageId={MessageId}",
+                message.MessageId);
+        }
     }
 
     private async Task HandleFailureAsync(

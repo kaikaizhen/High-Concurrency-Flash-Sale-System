@@ -86,13 +86,19 @@ public class QueuedAtomicFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
             throw new BusinessException("Insufficient stock.");
         }
 
+        var messageId = Guid.NewGuid();
+
         var message = new OrderCreatedMessage
         {
-            MessageId = Guid.NewGuid(),
+            MessageId = messageId,
             UserId = dto.UserId,
             ProductId = dto.ProductId,
             Quantity = dto.Quantity,
-            OccurredAt = DateTime.UtcNow
+            OccurredAt = DateTime.UtcNow,
+
+            // 有客戶端的 Key 就用它 —— 重送時 MessageId 會不同，
+            // 只有客戶端的 Key 能讓 Worker 認出「這是同一筆訂單」。
+            IdempotencyKey = dto.IdempotencyKey ?? messageId.ToString()
         };
 
         try

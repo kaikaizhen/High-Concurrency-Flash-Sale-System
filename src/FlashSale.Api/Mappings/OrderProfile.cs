@@ -22,6 +22,9 @@ public class OrderProfile : Profile
                 opt => opt.Ignore())
             .ForMember(
                 dest => dest.CreatedAt,
+                opt => opt.Ignore())
+            .ForMember(
+                dest => dest.IdempotencyKey,
                 opt => opt.Ignore());
 
         CreateMap<Order, OrderDtoModel>();
