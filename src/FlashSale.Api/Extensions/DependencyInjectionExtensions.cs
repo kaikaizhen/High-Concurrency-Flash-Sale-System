@@ -211,6 +211,10 @@ public static class DependencyInjectionExtensions
         }
 
         services.AddSingleton<IDistributedRateLimiter, RedisSlidingWindowRateLimiter>();
+
+        // 必須是 Singleton：CPU 使用率要靠「兩次取樣的差」計算，
+        // 每個請求各建一份就永遠拿不到基準點。
+        services.AddSingleton<ISystemMetricsProvider, SystemMetricsProvider>();
     }
 
     /// <summary>

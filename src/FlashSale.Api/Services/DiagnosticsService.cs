@@ -9,13 +9,16 @@ public class DiagnosticsService : IDiagnosticsService
 {
     private readonly IMetricsCollector _metrics;
     private readonly IQueueInspector _queueInspector;
+    private readonly ISystemMetricsProvider _systemMetrics;
 
     public DiagnosticsService(
         IMetricsCollector metrics,
-        IQueueInspector queueInspector)
+        IQueueInspector queueInspector,
+        ISystemMetricsProvider systemMetrics)
     {
         _metrics = metrics;
         _queueInspector = queueInspector;
+        _systemMetrics = systemMetrics;
     }
 
     public MetricsDtoModel GetMetrics()
@@ -31,5 +34,10 @@ public class DiagnosticsService : IDiagnosticsService
     public Task<QueueMetricsDtoModel> GetQueueMetricsAsync()
     {
         return _queueInspector.GetQueueMetricsAsync();
+    }
+
+    public Task<SystemMetricsDtoModel> GetSystemMetricsAsync()
+    {
+        return _systemMetrics.GetAsync();
     }
 }
