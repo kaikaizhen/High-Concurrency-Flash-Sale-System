@@ -50,11 +50,16 @@ flowchart LR
 
 ## Git 原則
 
-本專案**只使用本地 Git**，不建立 GitHub Repository、不設定 remote、不執行 push。
-
-```bash
-git remote -v   # 預期沒有任何輸出
+```text
+main          穩定版本，每個重要里程碑由 develop 合併並打 tag
+  └── develop 日常整合分支
+        └── feature/*   每個 Stage 一個，完成後 --no-ff 合併回 develop
 ```
+
+遠端：<https://github.com/kaikaizhen/High-Concurrency-Flash-Sale-System>
+
+> Stage 1–5 期間刻意只使用本地 Git（見 [計畫 §4.1](docs/計畫.md)），
+> 於 2026-08-28 Stage 5 完成後才接上遠端。
 
 ---
 
