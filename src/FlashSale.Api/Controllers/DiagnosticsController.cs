@@ -57,4 +57,18 @@ public class DiagnosticsController : ControllerBase
 
         return Ok(_mapper.Map<QueueMetricsViewModel>(result));
     }
+
+    /// <summary>
+    /// Stage 9：系統面指標（CPU / 記憶體 / DB 連線 / Redis 延遲 / 佇列）。
+    ///
+    /// 光看 RPS 與 P99 只知道「慢」，不知道慢在哪裡。
+    /// 壓測腳本會在每個階段取樣這個端點來定位瓶頸。
+    /// </summary>
+    [HttpGet("system")]
+    public async Task<ActionResult<SystemMetricsViewModel>> GetSystemMetricsAsync()
+    {
+        var result = await _diagnosticsService.GetSystemMetricsAsync();
+
+        return Ok(_mapper.Map<SystemMetricsViewModel>(result));
+    }
 }

@@ -10,5 +10,8 @@ public class DiagnosticsProfile : Profile
     {
         CreateMap<MetricsDtoModel, MetricsViewModel>();
         CreateMap<QueueMetricsDtoModel, QueueMetricsViewModel>();
+        CreateMap<SystemMetricsDtoModel, SystemMetricsViewModel>();
+        CreateMap<SystemMetricsDtoModel.ProcessMetrics, SystemMetricsViewModel.ProcessViewModel>();
+        CreateMap<SystemMetricsDtoModel.DependencyMetrics, SystemMetricsViewModel.DependencyViewModel>();
     }
 }

@@ -9,4 +9,6 @@ public interface IDiagnosticsService
     void ResetMetrics();
 
     Task<QueueMetricsDtoModel> GetQueueMetricsAsync();
+
+    Task<SystemMetricsDtoModel> GetSystemMetricsAsync();
 }

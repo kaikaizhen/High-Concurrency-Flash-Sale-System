@@ -21,7 +21,7 @@
 | 6. Idempotency | `feature/idempotency` | ✅ 完成 — [結果](docs/idempotency.md) |
 | 7. Rate Limit | `feature/rate-limit` | ✅ 完成 — [結果](docs/rate-limit.md) |
 | 8. Multi Instance | `feature/multi-instance` | ✅ 完成 — [結果](docs/multi-instance.md) |
-| 9. Load Test | `feature/load-test` | 未開始 |
+| 9. Load Test | `feature/load-test` | ✅ 完成 — [基準](docs/load-test/baseline.md) / [瓶頸分析](docs/load-test/final.md) |
 | 10. Observability + Optimization | `feature/observability-optimization` | 未開始 |
 
 ---
@@ -42,8 +42,8 @@ flowchart LR
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
     classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4,S5,S6,S7,S8 done
-    class S9,S10 todo
+    class S1,S2,S3,S4,S5,S6,S7,S8,S9 done
+    class S10 todo
 ```
 
 ---
@@ -322,6 +322,25 @@ sequenceDiagram
 `dbCommands` 由 EF Core Interceptor 累加，是實際值而非估算。
 
 > 計數器存在單一 Instance 的記憶體中，Stage 8 導入多 Instance 後需要改寫。
+
+### `GET /api/diagnostics/system`
+
+Stage 9：CPU、記憶體、執行緒、DB 連線與延遲、Redis 延遲、佇列長度。
+
+```json
+{
+  "instanceId": "api-1",
+  "process": { "cpuPercent": 12.1, "workingSetMb": 177, "gcHeapMb": 30, "threadCount": 59, "processorCount": 12 },
+  "database": { "latencyMs": 12.9, "connections": -1, "available": true },
+  "redis": { "latencyMs": 1.1, "connections": -1, "available": true },
+  "queue": { "pendingOrders": 0, "pendingRetries": 0, "deadLettered": 0, "available": true }
+}
+```
+
+> `database.connections` 為 `-1` 代表**量不到**（需要 `VIEW SERVER STATE` 權限）。
+> 回報一個恆為 1 的假數字比不回報更糟 —— 會讓人以為連線池很閒。
+>
+> `cpuPercent` 需要兩次取樣才算得出來，第一次呼叫永遠是 0。
 
 ### `GET /api/diagnostics/queue`
 
@@ -705,3 +724,42 @@ flowchart TD
 ```
 
 完整分析：[docs/multi-instance.md](docs/multi-instance.md)
+
+---
+
+## Stage 9 Load Test
+
+前八個階段的壓測腳本各自為政、負載模型不同，數字彼此不可比。
+這階段把「負載模型」與「打哪個端點」拆開，同一套 Profile 套用在不同端點上。
+
+```powershell
+$env:RateLimit__Enabled="false"     # 不關的話量到的是限流器而非系統容量
+.\tests\load\k6\Run-LoadTestSuite.ps1 -Profile stress -Scenario read
+.\tests\load\k6\Run-LoadTestSuite.ps1 -Profile stress -Scenario purchase
+```
+
+四種 Profile（`smoke` 10 / `normal` 100 / `stress` 500→1000→5000 / `spike` 100→5000→100）
+× 兩種 Scenario（`read` 走快取 / `purchase` 碰資料庫）。
+
+### 讀取路徑：全部零錯誤
+
+| Profile | 請求數 | 錯誤率 | RPS | P95 | P99 | 峰值 CPU |
+|---|---:|---:|---:|---:|---:|---:|
+| smoke (10 VU) | 225,285 | 0% | 7,509 | 2.0 ms | 6.0 ms | 3.6% |
+| normal (100 VU) | 1,195,675 | 0% | 26,570 | 5.1 ms | 10.4 ms | 12.1% |
+| stress (5000 VU) | 3,271,026 | 0% | **31,151** | 96.9 ms | 204.3 ms | 42.8% |
+| spike (→5000→100) | 2,973,257 | 0% | 31,295 | 95.6 ms | 192.5 ms | 42.8% |
+
+### 瓶頸：同一系統，兩條路徑差 167 倍
+
+| | read（有快取） | purchase | 倍數 |
+|---|---:|---:|---:|
+| RPS | 31,151 | **187** | 167× |
+| P99 | 204 ms | **16,116 ms** | 79× |
+| 錯誤率 | 0% | **36.8%** | — |
+| **峰值 CPU** | 42.8% | **2.4%** | **1/18** |
+
+**慢 167 倍的那條路徑，CPU 用得少 18 倍。** 系統不是忙不過來，是在等
+`Products` 表上那一列的排他鎖。加 CPU、加機器、加連線池都不會改變這個數字。
+
+完整數據：[baseline.md](docs/load-test/baseline.md)　瓶頸分析與擴充建議：[final.md](docs/load-test/final.md)
