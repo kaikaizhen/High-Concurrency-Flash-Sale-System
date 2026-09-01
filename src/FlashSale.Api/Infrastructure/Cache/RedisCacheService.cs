@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FlashSale.Api.Infrastructure.Diagnostics;
+using FlashSale.Api.Infrastructure.Observability;
 using FlashSale.Api.Options;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
@@ -27,17 +28,20 @@ public class RedisCacheService : ICacheService
 
     private readonly IConnectionMultiplexer _connection;
     private readonly IMetricsCollector _metrics;
+    private readonly FlashSaleMetrics _flashSaleMetrics;
     private readonly ILogger<RedisCacheService> _logger;
     private readonly string _prefix;
 
     public RedisCacheService(
         IConnectionMultiplexer connection,
         IMetricsCollector metrics,
+        FlashSaleMetrics flashSaleMetrics,
         IOptions<RedisOptions> redisOptions,
         ILogger<RedisCacheService> logger)
     {
         _connection = connection;
         _metrics = metrics;
+        _flashSaleMetrics = flashSaleMetrics;
         _logger = logger;
         _prefix = redisOptions.Value.InstanceName;
     }
@@ -53,12 +57,14 @@ public class RedisCacheService : ICacheService
             if (!value.HasValue)
             {
                 _metrics.RecordCacheMiss();
+                _flashSaleMetrics.RecordCacheLookup(hit: false);
                 _logger.LogDebug("Cache MISS. Key={Key}", key);
 
                 return CacheResult<T>.Miss();
             }
 
             _metrics.RecordCacheHit();
+            _flashSaleMetrics.RecordCacheLookup(hit: true);
             _logger.LogDebug("Cache HIT. Key={Key}", key);
 
             var raw = value.ToString();

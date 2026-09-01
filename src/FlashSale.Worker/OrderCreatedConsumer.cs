@@ -3,6 +3,7 @@ using System.Text.Json;
 using FlashSale.Api.Common.Constants;
 using FlashSale.Api.Common.Enums;
 using FlashSale.Api.Infrastructure.Messaging;
+using FlashSale.Api.Infrastructure.Observability;
 using FlashSale.Api.Models.Entities;
 using FlashSale.Api.Models.Messages;
 using FlashSale.Api.Options;
@@ -111,6 +112,15 @@ public class OrderCreatedConsumer : BackgroundService
         BasicDeliverEventArgs ea,
         CancellationToken cancellationToken)
     {
+        // Stage 10：Consumer 端的 Span。
+        //
+        // 它與 API 端的 Producer Span 是同一條業務鏈路的兩端，
+        // 但**不是同一個 Trace** —— 訊息裡沒有傳遞 traceparent。
+        // 要讓兩端串起來需要在發布時把 W3C Trace Context 寫進 Header、
+        // 消費時取出並設為 Parent，本階段未實作（見 docs/final-analysis.md）。
+        using var activity = FlashSaleActivitySource.StartConsume(
+            MessagingConstants.OrderCreatedQueue);
+
         OrderCreatedMessage? message;
 
         // ---- 第一種失敗：訊息本身無法解析 ----

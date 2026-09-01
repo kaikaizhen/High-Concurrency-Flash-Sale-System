@@ -58,6 +58,25 @@ public interface IProductRepository
     /// </summary>
     Task RestoreStockAsync(int productId, int quantity);
 
+    // --- Stage 10：單一往返的扣庫存 + 建訂單 ---
+
+    /// <summary>
+    /// 在**一次網路往返**內完成扣庫存與建立訂單。
+    ///
+    /// 分成多個命令送出時，庫存那一列的排他鎖必須從 UPDATE 持有到 COMMIT，
+    /// 期間還夾著往返延遲。秒殺時所有人搶同一列，那段時間就是全系統的
+    /// 序列化瓶頸 —— 縮短它等於直接提高吞吐量。
+    /// </summary>
+    /// <returns>
+    /// 新訂單的 Id；0 代表庫存不足或商品不存在。
+    /// </returns>
+    Task<int> TryPurchaseInSingleRoundTripAsync(
+        int productId,
+        int quantity,
+        int userId,
+        string? idempotencyKey,
+        DateTime createdAt);
+
     // --- Stage 1 Baseline 對照組 ---
 
     /// <summary>

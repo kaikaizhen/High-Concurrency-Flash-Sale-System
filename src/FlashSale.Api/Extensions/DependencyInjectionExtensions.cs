@@ -58,6 +58,7 @@ public static class DependencyInjectionExtensions
         services.AddScoped<IFlashSalePurchaseStrategy, OptimisticFlashSalePurchaseStrategy>();
         services.AddScoped<IFlashSalePurchaseStrategy, AtomicFlashSalePurchaseStrategy>();
         services.AddScoped<IFlashSalePurchaseStrategy, QueuedAtomicFlashSalePurchaseStrategy>();
+        services.AddScoped<IFlashSalePurchaseStrategy, AtomicBatchedFlashSalePurchaseStrategy>();
     }
 
     private static void RegisterRepositories(

@@ -22,7 +22,7 @@
 | 7. Rate Limit | `feature/rate-limit` | ✅ 完成 — [結果](docs/rate-limit.md) |
 | 8. Multi Instance | `feature/multi-instance` | ✅ 完成 — [結果](docs/multi-instance.md) |
 | 9. Load Test | `feature/load-test` | ✅ 完成 — [基準](docs/load-test/baseline.md) / [瓶頸分析](docs/load-test/final.md) |
-| 10. Observability + Optimization | `feature/observability-optimization` | 未開始 |
+| 10. Observability + Optimization | `feature/observability-optimization` | ✅ 完成 — [最終報告](docs/final-analysis.md) |
 
 ---
 
@@ -41,9 +41,7 @@ flowchart LR
     S9 --> S10["Stage 10<br/>Observability"]
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
-    classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4,S5,S6,S7,S8,S9 done
-    class S10 todo
+    class S1,S2,S3,S4,S5,S6,S7,S8,S9,S10 done
 ```
 
 ---
@@ -763,3 +761,58 @@ $env:RateLimit__Enabled="false"     # 不關的話量到的是限流器而非系
 `Products` 表上那一列的排他鎖。加 CPU、加機器、加連線池都不會改變這個數字。
 
 完整數據：[baseline.md](docs/load-test/baseline.md)　瓶頸分析與擴充建議：[final.md](docs/load-test/final.md)
+
+---
+
+## Stage 10 Observability + Optimization
+
+```powershell
+docker compose up -d aspire-dashboard     # http://localhost:18888
+```
+
+三者分工，缺一不可：
+
+| | 回答的問題 | 實作 |
+|---|---|---|
+| **Metrics** | 系統現在健不健康？ | OpenTelemetry + 自訂 Meter（成交數、拒絕原因、快取命中） |
+| **Logs** | 哪些請求出了問題？ | Serilog 結構化日誌，**一請求一行** |
+| **Tracing** | **這一個**請求為什麼慢？ | OpenTelemetry Traces + 業務層 Span |
+
+```text
+[12:52:58 INF] HTTP POST /api/flash-sale/98 responded 200 in 84.01 ms.
+  TraceId=8d5996e0f89db35334244dc19af81ad0 UserId=obs-1 ProductId=98
+```
+
+日誌等級隨結果變化（5xx→Error、4xx→Warning），
+JSON 檔帶 `@tr`/`@sp` 讓日誌能直接跳到對應的 Trace。
+
+### 有數據依據的優化
+
+計畫 §15 明令禁止憑感覺優化。完整推導：
+
+```text
+Measure          搶購 141 RPS，但 CPU 只有 1.3%
+Find Bottleneck  不是 CPU/記憶體/網路，是庫存那一列的排他鎖
+Hypothesis       BEGIN TRAN / UPDATE / INSERT / COMMIT 是四次往返，
+                 鎖從 UPDATE 持有到 COMMIT，橫跨三次往返延遲。
+                 合併成單一批次語句應能大幅縮短臨界區
+Change           AtomicBatched 策略（語意完全相同，只差往返次數）
+Measure Again    ↓
+```
+
+| normal（100 VU） | `Atomic` | `AtomicBatched` | 變化 |
+|---|---:|---:|---|
+| **RPS** | 135.0 | **199.3** | **+47.6%** |
+| **P50** | 687.8 ms | **380.7 ms** | **−45%** |
+| P99 | 926.1 ms | 734.1 ms | −21% |
+
+| stress（→5000 VU） | `Atomic` | `AtomicBatched` | 變化 |
+|---|---:|---:|---|
+| RPS | 187.3 | 210.1 | +12% |
+| **錯誤率** | **36.8%** | **22.5%** | **−39%** |
+
+**代價也一起量了**：優化後走原生 ADO.NET，繞過 EF Core 攔截器管線，
+`DbCommands` 指標從 12,179 變成 23 —— 不是命令變少，是**計數器失明了**。
+這是繞過 ORM 的真實成本。
+
+**最終報告（含計畫 §15 十個問題的完整答案）：[docs/final-analysis.md](docs/final-analysis.md)**

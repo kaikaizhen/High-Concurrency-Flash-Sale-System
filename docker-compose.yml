@@ -126,6 +126,24 @@ services:
       SharedState__DistributedRateLimit: ${SHARED_RATELIMIT:-true}
 
   # ------------------------------------------------------------------
+  # Stage 10：可觀測性儀表板
+  #
+  # Aspire Dashboard 一個容器就同時接收 Traces / Metrics / Logs（OTLP），
+  # 不需要另外架 Jaeger + Prometheus + Grafana 三套。
+  # 資料只存在記憶體中，重啟就消失 —— 適合開發與壓測分析，
+  # 正式環境需要有持久化的後端。
+  # ------------------------------------------------------------------
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: flashsale-dashboard
+    ports:
+      - "18888:18888"   # 網頁 UI
+      - "4317:18889"    # OTLP gRPC（對應用程式）
+    environment:
+      DASHBOARD__FRONTEND__AUTHMODE: Unsecured
+      DASHBOARD__OTLP__AUTHMODE: Unsecured
+
+  # ------------------------------------------------------------------
   # 負載平衡
   # ------------------------------------------------------------------
   nginx:
