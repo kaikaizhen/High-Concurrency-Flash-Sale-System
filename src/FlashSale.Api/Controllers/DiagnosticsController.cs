@@ -2,6 +2,7 @@ using AutoMapper;
 using FlashSale.Api.Models.ViewModels.Diagnostics;
 using FlashSale.Api.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace FlashSale.Api.Controllers;
 
@@ -13,6 +14,9 @@ namespace FlashSale.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/diagnostics")]
+// 觀測端點豁免限流：壓測腳本會高頻輪詢它（例如 Stage 5 每秒取樣佇列長度）。
+// 讓觀測工具被自己要觀測的限流機制擋下，量到的就不是系統的真實狀態了。
+[DisableRateLimiting]
 public class DiagnosticsController : ControllerBase
 {
     private readonly IDiagnosticsService _diagnosticsService;

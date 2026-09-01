@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using FlashSale.Api.Extensions;
 using FlashSale.Api.Middlewares;
+using FlashSale.Api.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +26,12 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddApplicationDependencies(
     builder.Configuration);
 
+// Stage 7：限流。獨立於 AddApplicationDependencies —— 它註冊的是
+// ASP.NET Core 的 Framework Service（RateLimiter middleware），
+// 不是應用程式自己的相依性。
+builder.Services.AddApplicationRateLimiting(
+    builder.Configuration);
+
 var app = builder.Build();
 
 // Stage 5：宣告 RabbitMQ 拓撲。
@@ -43,6 +50,16 @@ app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseHttpsRedirection();
 
 app.UseAuthorization();
+
+// 限流放在 Authorization 之後、端點之前：
+// 這樣被擋下的請求不會進到 Controller，也就不會消耗資料庫或 Redis。
+// 拒絕的成本必須遠低於處理的成本，否則限流本身就會變成瓶頸。
+if (app.Configuration.GetValue(
+        $"{RateLimitOptions.SectionName}:{nameof(RateLimitOptions.Enabled)}",
+        defaultValue: true))
+{
+    app.UseRateLimiter();
+}
 
 app.MapControllers();
 

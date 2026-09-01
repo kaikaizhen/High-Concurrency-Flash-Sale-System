@@ -1,10 +1,12 @@
 using AutoMapper;
+using FlashSale.Api.Common.Constants;
 using FlashSale.Api.Filters;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Params.FlashSales;
 using FlashSale.Api.Models.ViewModels.FlashSales;
 using FlashSale.Api.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace FlashSale.Api.Controllers;
 
@@ -24,6 +26,7 @@ public class FlashSaleController : ControllerBase
     }
 
     [HttpPost("{productId:int}")]
+    [EnableRateLimiting(RateLimitPolicies.FlashSale)]
     [ServiceFilter(typeof(IdempotencyFilter))]
     [ProducesResponseType(typeof(FlashSaleResultViewModel), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(FlashSaleResultViewModel), StatusCodes.Status202Accepted)]

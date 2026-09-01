@@ -19,7 +19,7 @@
 | 4. Redis | `feature/redis` | ✅ 完成 — [結果](docs/load-test/redis.md) |
 | 5. Message Queue | `feature/message-queue` | ✅ 完成 — [結果](docs/load-test/queue.md) |
 | 6. Idempotency | `feature/idempotency` | ✅ 完成 — [結果](docs/idempotency.md) |
-| 7. Rate Limit | `feature/rate-limit` | 未開始 |
+| 7. Rate Limit | `feature/rate-limit` | ✅ 完成 — [結果](docs/rate-limit.md) |
 | 8. Multi Instance | `feature/multi-instance` | 未開始 |
 | 9. Load Test | `feature/load-test` | 未開始 |
 | 10. Observability + Optimization | `feature/observability-optimization` | 未開始 |
@@ -42,8 +42,8 @@ flowchart LR
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
     classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4,S5,S6 done
-    class S7,S8,S9,S10 todo
+    class S1,S2,S3,S4,S5,S6,S7 done
+    class S8,S9,S10 todo
 ```
 
 ---
@@ -244,7 +244,9 @@ Base URL：`http://localhost:5080`
 { "userId": 1, "quantity": 1, "strategy": "Atomic" }
 ```
 
-選填 header：`Idempotency-Key: <uuid>`（Stage 6，見下方）。
+選填 header：
+- `Idempotency-Key: <uuid>` —— 重送保護（Stage 6）
+- `X-User-Id: <id>` —— per-User 限流的分區依據（Stage 7），未帶時退回 per-IP
 
 | 狀況 | HTTP | 回應 |
 |---|---|---|
@@ -255,6 +257,7 @@ Base URL：`http://localhost:5080`
 | 庫存不足 | `409` | |
 | 樂觀鎖重試用盡 | `409` | |
 | 相同 Key 正在處理中 | `409` | |
+| 超出限流額度 | `429` | + `Retry-After` header |
 
 ```json
 { "status": "Queued", "requestId": "d5455cdc-...", "order": null }
@@ -580,3 +583,65 @@ flowchart TD
 但客戶端只拿得到 409，無法取得原本的訂單編號 —— 這就是第一層的價值。
 
 完整分析與儲存體比較（Redis vs SQL Server）：[docs/idempotency.md](docs/idempotency.md)
+
+---
+
+## Stage 7 Rate Limit
+
+前六個階段都在回答「如何處理更多請求」。這一階段是另一個方向：
+**拒絕不合理的請求**，並且用最低的成本拒絕。
+
+兩層並存，任一擋下就是 `429`：
+
+```mermaid
+flowchart TD
+    R(["請求"]) --> IP
+
+    IP["全域 per-IP<br/>FixedWindow 600 / 60s"]
+    IP -->|超額| B1["429 + Retry-After"]
+    IP -->|通過| EP
+
+    EP["端點政策 per-User<br/>SlidingWindow 10 / 1s<br/>（僅 /api/flash-sale）"]
+    EP -->|超額| B1
+    EP -->|通過| C["Controller → DB / Redis"]
+
+    D(["/api/diagnostics"]) -.->|DisableRateLimiting| C
+
+    classDef limiter fill:#1971c2,stroke:#1971c2,color:#fff
+    classDef block fill:#c92a2a,stroke:#c92a2a,color:#fff
+    class IP,EP limiter
+    class B1 block
+```
+
+```powershell
+.\tests\load\k6\Run-RateLimitTest.ps1 -Label SlidingWindow
+```
+
+濫用流量（1000 req/s、同一使用者、10 秒）：
+
+| 演算法 | 請求 | 通過 | 429 | 通過率 |
+|---|---:|---:|---:|---:|
+| FixedWindow | 10001 | 100 | 9901 | 1.0% |
+| **SlidingWindow** | 10001 | **90** | 9911 | **0.9%** |
+| TokenBucket | 10000 | 109 | 9891 | 1.1% |
+| Concurrency | 10000 | 1544 | 8456 | 15.4% |
+
+正常流量（10 req/s、不同使用者）四種**都是 100% 通過**，不誤傷。
+
+**拒絕的成本：429 平均 0.1 ms，正常處理 12.7–17.0 ms** —— 1/130 以下。
+限流器在 Controller 之前，被擋下的請求不碰資料庫或 Redis。
+
+### 固定視窗的邊界爆發
+
+限制「20 次 / 10 秒」，在視窗交界前後各送一批：
+
+| | FixedWindow | SlidingWindow |
+|---|---|---|
+| 跨越邊界約 3 秒內放行 | **39 個（1.95×）** | **20 個（1.0×）** |
+
+而每個視窗看起來都完全合規。這就是搶購端點選 SlidingWindow 的原因。
+
+> ⚠️ 限流**預設開啟**，會擋下 Stage 2–6 的壓測腳本（單一來源數千請求）。
+> 重現先前階段時請先 `$env:RateLimit__Enabled="false"`。
+
+完整分析：[docs/rate-limit.md](docs/rate-limit.md)
