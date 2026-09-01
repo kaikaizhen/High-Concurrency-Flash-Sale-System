@@ -5,6 +5,7 @@ using FlashSale.Api.Infrastructure.Cache;
 using FlashSale.Api.Infrastructure.Idempotency;
 using FlashSale.Api.Infrastructure.Diagnostics;
 using FlashSale.Api.Infrastructure.Messaging;
+using FlashSale.Api.Infrastructure.RateLimiting;
 using FlashSale.Api.Mappings;
 using FlashSale.Api.Options;
 using FlashSale.Api.Repositories;
@@ -105,18 +106,22 @@ public static class DependencyInjectionExtensions
 
         services.Configure<IdempotencyOptions>(
             configuration.GetSection(IdempotencyOptions.SectionName));
+
+        services.Configure<RateLimitOptions>(
+            configuration.GetSection(RateLimitOptions.SectionName));
+
+        services.Configure<SharedStateOptions>(
+            configuration.GetSection(SharedStateOptions.SectionName));
     }
 
     private static void RegisterInfrastructureServices(
         IServiceCollection services,
         IConfiguration configuration)
     {
-        // 計數器與鎖必須是 Singleton，否則每個請求都會拿到全新的實例。
-        services.AddSingleton<IMetricsCollector, InMemoryMetricsCollector>();
-        services.AddSingleton<IKeyedLock, KeyedLock>();
         services.AddSingleton<MetricsDbCommandInterceptor>();
 
         RegisterRedis(services, configuration);
+        RegisterSharedState(services, configuration);
 
         services.AddScoped<ICacheService, RedisCacheService>();
 
@@ -171,6 +176,41 @@ public static class DependencyInjectionExtensions
         // （Singleton），Singleton 無法注入 Scoped 服務。
         services.AddSingleton<IMessagePublisher, RabbitMqMessagePublisher>();
         services.AddSingleton<IQueueInspector, RabbitMqQueueInspector>();
+    }
+
+    /// <summary>
+    /// Stage 8：跨 Instance 共用狀態。
+    ///
+    /// 三個元件都是 Singleton —— 它們持有的是「整個應用程式共用的東西」
+    /// （計數器、鎖、限流額度），每個請求各建一份等於沒有共用。
+    /// </summary>
+    private static void RegisterSharedState(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var options = configuration
+            .GetSection(SharedStateOptions.SectionName)
+            .Get<SharedStateOptions>() ?? new SharedStateOptions();
+
+        if (options.DistributedMetrics)
+        {
+            services.AddSingleton<IMetricsCollector, RedisMetricsCollector>();
+        }
+        else
+        {
+            services.AddSingleton<IMetricsCollector, InMemoryMetricsCollector>();
+        }
+
+        if (options.DistributedLock)
+        {
+            services.AddSingleton<IKeyedLock, RedisKeyedLock>();
+        }
+        else
+        {
+            services.AddSingleton<IKeyedLock, KeyedLock>();
+        }
+
+        services.AddSingleton<IDistributedRateLimiter, RedisSlidingWindowRateLimiter>();
     }
 
     /// <summary>

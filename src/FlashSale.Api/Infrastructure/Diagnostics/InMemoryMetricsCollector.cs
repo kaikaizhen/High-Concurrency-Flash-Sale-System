@@ -1,7 +1,15 @@
+using FlashSale.Api.Middlewares;
 using FlashSale.Api.Models.Dtos.Diagnostics;
 
 namespace FlashSale.Api.Infrastructure.Diagnostics;
 
+/// <summary>
+/// 行程內計數器。
+///
+/// **多 Instance 下不正確** —— 每台機器只看得到自己處理的那部分請求，
+/// 三台機器就要把三份數字加起來才是全貌。
+/// Stage 8 保留它作為對照組，正式路徑請用 <see cref="RedisMetricsCollector"/>。
+/// </summary>
 public class InMemoryMetricsCollector : IMetricsCollector
 {
     private long _dbCommands;
@@ -33,6 +41,8 @@ public class InMemoryMetricsCollector : IMetricsCollector
     {
         return new MetricsDtoModel
         {
+            InstanceId = InstanceHeaderMiddleware.ResolveInstanceId(),
+            Scope = "InMemory (this instance only)",
             DbCommands = Interlocked.Read(ref _dbCommands),
             CacheHits = Interlocked.Read(ref _cacheHits),
             CacheMisses = Interlocked.Read(ref _cacheMisses),

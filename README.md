@@ -20,7 +20,7 @@
 | 5. Message Queue | `feature/message-queue` | ✅ 完成 — [結果](docs/load-test/queue.md) |
 | 6. Idempotency | `feature/idempotency` | ✅ 完成 — [結果](docs/idempotency.md) |
 | 7. Rate Limit | `feature/rate-limit` | ✅ 完成 — [結果](docs/rate-limit.md) |
-| 8. Multi Instance | `feature/multi-instance` | 未開始 |
+| 8. Multi Instance | `feature/multi-instance` | ✅ 完成 — [結果](docs/multi-instance.md) |
 | 9. Load Test | `feature/load-test` | 未開始 |
 | 10. Observability + Optimization | `feature/observability-optimization` | 未開始 |
 
@@ -42,8 +42,8 @@ flowchart LR
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
     classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4,S5,S6,S7 done
-    class S8,S9,S10 todo
+    class S1,S2,S3,S4,S5,S6,S7,S8 done
+    class S9,S10 todo
 ```
 
 ---
@@ -113,7 +113,9 @@ HighConcurrencyFlashSale/
 │   ├── FlashSale.UnitTests/
 │   └── load/k6/                # k6 腳本與 PowerShell 執行器
 ├── docs/
-└── docker-compose.yml          # redis + rabbitmq（Stage 8 會再加 nginx）
+├── docker/nginx/               # Nginx 負載平衡設定
+├── docker-compose.yml          # nginx + api ×3（redis / rabbitmq 為選用 profile）
+└── .env.example                # docker-compose 的連線設定範本
 ```
 
 計畫 §18 規劃的 `FlashSale.Application` / `Domain` / `Infrastructure` 專案尚未建立 ——
@@ -645,3 +647,61 @@ flowchart TD
 > 重現先前階段時請先 `$env:RateLimit__Enabled="false"`。
 
 完整分析：[docs/rate-limit.md](docs/rate-limit.md)
+
+---
+
+## Stage 8 Multi Instance
+
+```powershell
+cp .env.example .env      # 填入 SQL Server / Redis / RabbitMQ 位址
+docker compose up -d --build
+.\tests\load\k6\Run-MultiInstanceTest.ps1
+```
+
+```mermaid
+flowchart TD
+    C(["Client"]) --> N["Nginx :8080<br/>least_conn"]
+    N --> A1["api-1"]
+    N --> A2["api-2"]
+    N --> A3["api-3"]
+
+    A1 --> S
+    A2 --> S
+    A3 --> S
+
+    S["共用狀態<br/>SQL Server ／ Redis ／ RabbitMQ"]
+
+    classDef lb fill:#7048e8,stroke:#7048e8,color:#fff
+    classDef api fill:#1971c2,stroke:#1971c2,color:#fff
+    classDef store fill:#495057,stroke:#495057,color:#fff
+    class N lb
+    class A1,A2,A3 api
+    class S store
+```
+
+三個容器**完全相同**，只有 `INSTANCE_ID` 不同 —— 這就是 Stateless。
+每個回應帶 `X-Instance-Id`，看得出是哪一台處理的。
+
+### 前七個階段留下的三顆地雷
+
+單一 Instance 時完全正確，多 Instance 時全部失準：
+
+| | 行程內狀態 | Redis 共用狀態 |
+|---|---|---|
+| 三台回報的 `DbCommands` | 36 / 0 / **93** | **3 / 3 / 3** |
+| 冷快取造成的 DB 查詢 | 93 | **3** |
+| 限流通過數（限制 10/秒 × 3 秒） | **90（3 倍）** | **30（正確）** |
+
+`api-2` 回報 `DbCommands=0` 特別危險 —— 不是「沒有查詢」，
+是「這台沒有查詢」，監控看起來一片祥和。
+
+### Stateless 與 Kill Instance
+
+```text
+帶同一個 Idempotency-Key 重送 6 次 -> 分散到 3 台，全部正確回放
+                                      訂單數 1、庫存 99  ✅
+
+停止 api-2 -> api-1 15 次 / api-3 15 次，失敗請求數 0  ✅
+```
+
+完整分析：[docs/multi-instance.md](docs/multi-instance.md)
