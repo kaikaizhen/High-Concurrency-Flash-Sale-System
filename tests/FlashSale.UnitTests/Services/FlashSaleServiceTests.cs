@@ -2,6 +2,7 @@ using FlashSale.Api.Common.Constants;
 using FlashSale.Api.Common.Enums;
 using FlashSale.Api.Common.Exceptions;
 using FlashSale.Api.Infrastructure.Cache;
+using FlashSale.Api.Infrastructure.Observability;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Entities;
 using FlashSale.Api.Options;
@@ -36,6 +37,7 @@ public class FlashSaleServiceTests
             strategies,
             _cache.Object,
             Microsoft.Extensions.Options.Options.Create(_cacheOptions),
+            TestMetricsFactory.CreateFlashSaleMetrics(),
             TestMapperFactory.Create());
     }
 

@@ -56,3 +56,6 @@ coverage*/
 *.coverage
 *.trx
 tests/load/k6/results/
+
+## Stage 10：結構化日誌輸出
+logs/

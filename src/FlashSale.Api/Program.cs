@@ -6,6 +6,12 @@ using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Stage 10：最早設定日誌 —— 啟動過程本身的錯誤
+// （設定讀不到、相依註冊失敗）也需要被記錄下來。
+builder.AddStructuredLogging();
+
+builder.Services.AddApplicationObservability(builder.Configuration);
+
 builder.Services
     .AddControllers(options =>
     {
@@ -84,6 +90,13 @@ app.UseForwardedHeaders();
 
 // 標記處理這個請求的 Instance，多 Instance 下的一切觀察都靠它。
 app.UseMiddleware<InstanceHeaderMiddleware>();
+
+// Stage 10：一個請求一行結構化日誌。
+//
+// 放在 GlobalExceptionMiddleware **之外**：
+// 那個中介軟體會把例外轉成 HTTP 回應，若日誌在它裡面，
+// 看到的永遠是「已處理的 500」而不是原始例外。
+app.UseMiddleware<RequestLoggingMiddleware>();
 
 app.UseMiddleware<GlobalExceptionMiddleware>();
 

@@ -34,5 +34,16 @@ public enum FlashSaleStrategy
     ///
     /// 回應為 202 Accepted，此時訂單尚未寫入資料庫。
     /// </summary>
-    AtomicQueued = 4
+    AtomicQueued = 4,
+
+    /// <summary>
+    /// Stage 10 的優化成果：把扣庫存與建訂單合併成**單一批次語句**。
+    ///
+    /// Atomic 版本是 BEGIN TRAN / UPDATE / INSERT / COMMIT 四次網路往返，
+    /// 而庫存那一列的排他鎖從 UPDATE 一直持有到 COMMIT ——
+    /// 橫跨三次往返。秒殺時所有人搶同一列，那段時間就是全系統的序列化瓶頸。
+    ///
+    /// 這個版本把整段送成一個命令，鎖只在伺服器端執行期間持有。
+    /// </summary>
+    AtomicBatched = 5
 }
