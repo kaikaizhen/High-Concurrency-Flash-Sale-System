@@ -22,6 +22,17 @@ public class OrderCreatedMessage
     /// </summary>
     public Guid MessageId { get; set; }
 
+    /// <summary>
+    /// 這筆訂單的唯一識別碼，會寫進 <c>Order.IdempotencyKey</c>。
+    ///
+    /// 客戶端有帶 Idempotency-Key 時就用它，否則退回 MessageId。
+    ///
+    /// 為什麼不直接用 MessageId：客戶端重送時 API 會產生**新的** MessageId，
+    /// 兩則訊息會被視為不同的訂單。用客戶端的 Key 才能讓
+    /// Worker 端的去重涵蓋「API 層防護失效」的情況。
+    /// </summary>
+    public string IdempotencyKey { get; set; } = string.Empty;
+
     public int UserId { get; set; }
 
     public int ProductId { get; set; }

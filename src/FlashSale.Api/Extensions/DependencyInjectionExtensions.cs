@@ -1,6 +1,8 @@
 using FlashSale.Api.Data;
 using FlashSale.Api.Data.Interceptors;
+using FlashSale.Api.Filters;
 using FlashSale.Api.Infrastructure.Cache;
+using FlashSale.Api.Infrastructure.Idempotency;
 using FlashSale.Api.Infrastructure.Diagnostics;
 using FlashSale.Api.Infrastructure.Messaging;
 using FlashSale.Api.Mappings;
@@ -100,6 +102,9 @@ public static class DependencyInjectionExtensions
 
         services.Configure<RabbitMqOptions>(
             configuration.GetSection(RabbitMqOptions.SectionName));
+
+        services.Configure<IdempotencyOptions>(
+            configuration.GetSection(IdempotencyOptions.SectionName));
     }
 
     private static void RegisterInfrastructureServices(
@@ -116,6 +121,34 @@ public static class DependencyInjectionExtensions
         services.AddScoped<ICacheService, RedisCacheService>();
 
         RegisterMessaging(services);
+        RegisterIdempotency(services, configuration);
+    }
+
+    /// <summary>
+    /// Stage 6：冪等記錄的儲存體。
+    ///
+    /// 計畫 §11 要求比較 SQL Server 與 Redis 兩種做法，因此兩個實作並存，
+    /// 由設定決定實際註冊哪一個。
+    /// </summary>
+    private static void RegisterIdempotency(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var options = configuration
+            .GetSection(IdempotencyOptions.SectionName)
+            .Get<IdempotencyOptions>() ?? new IdempotencyOptions();
+
+        if (options.Provider == IdempotencyProvider.SqlServer)
+        {
+            // SQL Server 版依賴 DbContext，必須是 Scoped。
+            services.AddScoped<IIdempotencyStore, SqlServerIdempotencyStore>();
+        }
+        else
+        {
+            services.AddScoped<IIdempotencyStore, RedisIdempotencyStore>();
+        }
+
+        services.AddScoped<IdempotencyFilter>();
     }
 
     /// <summary>

@@ -18,7 +18,7 @@
 | 3. Concurrency Control | `feature/concurrency-control` | ✅ 完成 — [比較](docs/concurrency-comparison.md) |
 | 4. Redis | `feature/redis` | ✅ 完成 — [結果](docs/load-test/redis.md) |
 | 5. Message Queue | `feature/message-queue` | ✅ 完成 — [結果](docs/load-test/queue.md) |
-| 6. Idempotency | `feature/idempotency` | 未開始 |
+| 6. Idempotency | `feature/idempotency` | ✅ 完成 — [結果](docs/idempotency.md) |
 | 7. Rate Limit | `feature/rate-limit` | 未開始 |
 | 8. Multi Instance | `feature/multi-instance` | 未開始 |
 | 9. Load Test | `feature/load-test` | 未開始 |
@@ -42,8 +42,8 @@ flowchart LR
 
     classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
     classDef todo fill:#495057,stroke:#495057,color:#fff
-    class S1,S2,S3,S4,S5 done
-    class S6,S7,S8,S9,S10 todo
+    class S1,S2,S3,S4,S5,S6 done
+    class S7,S8,S9,S10 todo
 ```
 
 ---
@@ -244,13 +244,17 @@ Base URL：`http://localhost:5080`
 { "userId": 1, "quantity": 1, "strategy": "Atomic" }
 ```
 
+選填 header：`Idempotency-Key: <uuid>`（Stage 6，見下方）。
+
 | 狀況 | HTTP | 回應 |
 |---|---|---|
 | 成功（同步） | `200` | `status: "Completed"` + `order` |
 | 成功（非同步） | `202` | `status: "Queued"` + `requestId`，`order` 為 `null` |
+| 重送（相同 Key） | `200`/`202` | 回放原本的回應 + `Idempotency-Replayed: true` |
 | 商品不存在 | `404` | |
 | 庫存不足 | `409` | |
 | 樂觀鎖重試用盡 | `409` | |
+| 相同 Key 正在處理中 | `409` | |
 
 ```json
 { "status": "Queued", "requestId": "d5455cdc-...", "order": null }
@@ -523,3 +527,56 @@ flowchart LR
 > 刻意留給 Stage 6 用 `MessageId` 解決。
 
 完整分析：[docs/load-test/queue.md](docs/load-test/queue.md)
+
+---
+
+## Stage 6 Idempotency
+
+送出 `Idempotency-Key` header，重送不會建立第二筆訂單。
+
+```bash
+curl -X POST http://localhost:5080/api/flash-sale/1 \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{"userId":1,"quantity":1}'
+```
+
+三層防護，各自負責不同的失效情境：
+
+```mermaid
+flowchart TD
+    R(["重送 / 併發重複請求"]) --> L1
+
+    L1["第一層 IdempotencyFilter<br/>Redis SET NX 原子佔用"]
+    L1 -->|"已完成 → 回放原本的回應"| OK1["200/202 + Idempotency-Replayed"]
+    L1 -->|"處理中 → 併發重複"| C409["409"]
+    L1 -.->|"Redis 故障 / 設定關閉"| L2
+
+    L2["第二層 Orders.IdempotencyKey<br/>篩選唯一索引（資料庫強制）"]
+    L2 -->|"重複 → Rollback 還原庫存"| C409
+
+    MQ(["RabbitMQ 重複投遞"]) --> L3
+    L3["第三層 Worker 去重<br/>同一個唯一索引"]
+    L3 -->|"重複 → 視為成功並 ACK"| DONE["不建立第二筆訂單"]
+
+    classDef layer fill:#1971c2,stroke:#1971c2,color:#fff
+    classDef good fill:#2f9e44,stroke:#2f9e44,color:#fff
+    class L1,L2,L3 layer
+    class OK1,DONE good
+```
+
+```powershell
+.\tests\load\k6\Run-IdempotencyTest.ps1 -Strategy Atomic
+.\tests\load\k6\Run-IdempotencyTest.ps1 -Strategy AtomicQueued
+```
+
+| 測試 | 請求 | 受理 | 409 | **訂單數** | **庫存** |
+|---|---:|---:|---:|---:|---:|
+| 依序重送 5 次 | 5 | 1 + 4 回放 | 0 | **1** | **99** |
+| 50 個同時重複 | 50 | 1 | 49 | **1** | **99** |
+| Worker 重複投遞 3 次 | 3 | — | — | **1** | — |
+
+關閉第一層時**訂單數仍是 1**（資料庫唯一索引守住），
+但客戶端只拿得到 409，無法取得原本的訂單編號 —— 這就是第一層的價值。
+
+完整分析與儲存體比較（Redis vs SQL Server）：[docs/idempotency.md](docs/idempotency.md)
