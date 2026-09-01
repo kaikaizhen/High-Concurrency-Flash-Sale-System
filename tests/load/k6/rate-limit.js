@@ -52,9 +52,14 @@ export default function () {
     ? SHARED_USER_ID
     : String(__VU);
 
+  // body 的 userId 與 X-User-Id 是兩回事：
+  // 前者是商業上的使用者（必須是正整數），後者是限流的分區鍵（任意字串）。
+  // 早期版本把 header 的值 Number() 之後塞進 body，
+  // 非數字的分區鍵會變成 null 而被模型驗證擋下回 400 ——
+  // 那些 400 會被誤計為「錯誤」，看起來像限流失效。
   const res = http.post(
     `${BASE_URL}/api/flash-sale/${PRODUCT_ID}`,
-    JSON.stringify({ userId: Number(userId), quantity: 1 }),
+    JSON.stringify({ userId: __VU, quantity: 1 }),
     {
       headers: {
         'Content-Type': 'application/json',
