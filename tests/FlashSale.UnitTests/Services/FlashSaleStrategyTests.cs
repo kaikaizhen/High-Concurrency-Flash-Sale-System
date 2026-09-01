@@ -1,7 +1,11 @@
+using FlashSale.Api.Common.Constants;
 using FlashSale.Api.Common.Enums;
 using FlashSale.Api.Common.Exceptions;
+using FlashSale.Api.Infrastructure.Messaging;
 using FlashSale.Api.Models.Dtos.FlashSales;
 using FlashSale.Api.Models.Entities;
+using FlashSale.Api.Models.Messages;
+using FlashSale.Api.Options;
 using FlashSale.Api.Repositories.Interfaces;
 using FlashSale.Api.Services.FlashSaleStrategies;
 using FlashSale.Api.Services.Interfaces;
@@ -38,6 +42,12 @@ public class FlashSaleStrategyTests
         _orderRepository
             .Setup(x => x.CreateAsync(It.IsAny<Order>()))
             .Returns(Task.CompletedTask);
+
+        // Stage 6：同步策略改用 TryCreateAsync，
+        // 預設回傳 true（沒有重複的 IdempotencyKey）。
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .ReturnsAsync(true);
     }
 
     private static CreateFlashSaleDtoModel Dto(int quantity = 1)
@@ -147,9 +157,10 @@ public class FlashSaleStrategyTests
             .Setup(x => x.TryUpdateWithVersionAsync(It.IsAny<Product>()))
             .ReturnsAsync(true);
 
-        var order = await CreateOptimisticSut().PurchaseAsync(Dto());
+        var result = await CreateOptimisticSut().PurchaseAsync(Dto());
 
-        Assert.Equal(OrderStatus.Completed, order.Status);
+        Assert.False(result.IsQueued);
+        Assert.Equal(OrderStatus.Completed, result.Order!.Status);
 
         _productRepository.Verify(
             x => x.TryUpdateWithVersionAsync(It.IsAny<Product>()),
@@ -243,9 +254,10 @@ public class FlashSaleStrategyTests
             .Setup(x => x.TryDeductStockAsync(1, 1))
             .ReturnsAsync(1);
 
-        var order = await CreateAtomicSut().PurchaseAsync(Dto());
+        var result = await CreateAtomicSut().PurchaseAsync(Dto());
 
-        Assert.Equal(OrderStatus.Completed, order.Status);
+        Assert.False(result.IsQueued);
+        Assert.Equal(OrderStatus.Completed, result.Order!.Status);
 
         // 成功路徑上完全不需要 SELECT 庫存 —— 這是它比另外兩版少一次往返的原因
         _productRepository.Verify(
@@ -257,6 +269,51 @@ public class FlashSaleStrategyTests
             Times.Never);
 
         _transaction.Verify(x => x.CommitAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Atomic_WhenIdempotencyKeyAlreadyUsed_ShouldRollbackStockAndThrow()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        // 資料庫的篩選唯一索引擋下重複的 IdempotencyKey
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .ReturnsAsync(false);
+
+        await Assert.ThrowsAsync<BusinessException>(
+            () => CreateAtomicSut().PurchaseAsync(Dto()));
+
+        // 庫存在建單之前就扣掉了，但這次沒有真的賣出東西 —— 必須還原。
+        // 少了這個 Rollback，每一次重複請求都會憑空少掉一件庫存。
+        _transaction.Verify(x => x.RollbackAsync(), Times.Once);
+        _transaction.Verify(x => x.CommitAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task Atomic_ShouldWriteIdempotencyKeyOntoOrder()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        Order? created = null;
+
+        _orderRepository
+            .Setup(x => x.TryCreateAsync(It.IsAny<Order>()))
+            .Callback<Order>(o => created = o)
+            .ReturnsAsync(true);
+
+        var dto = Dto();
+        dto.IdempotencyKey = "client-key-1";
+
+        await CreateAtomicSut().PurchaseAsync(dto);
+
+        // Key 必須落到訂單上，資料庫的唯一索引才有東西可以擋
+        Assert.NotNull(created);
+        Assert.Equal("client-key-1", created!.IdempotencyKey);
     }
 
     [Fact]
@@ -384,5 +441,179 @@ public class FlashSaleStrategyTests
         _orderRepository.Verify(
             x => x.CreateAsync(It.IsAny<Order>()),
             Times.Exactly(2));
+    }
+
+    // ------------------------------------------------------------------
+    // Stage 5 — Atomic Update + 非同步建立訂單
+    // ------------------------------------------------------------------
+
+    private readonly Mock<IMessagePublisher> _publisher = new();
+
+    private QueuedAtomicFlashSalePurchaseStrategy CreateQueuedSut(
+        bool rabbitMqEnabled = true)
+    {
+        return new QueuedAtomicFlashSalePurchaseStrategy(
+            _productRepository.Object,
+            _publisher.Object,
+            Microsoft.Extensions.Options.Options.Create(new RabbitMqOptions
+            {
+                Enabled = rabbitMqEnabled
+            }),
+            NullLogger<QueuedAtomicFlashSalePurchaseStrategy>.Instance);
+    }
+
+    [Fact]
+    public async Task Queued_WhenStockDeducted_ShouldPublishAndReturnQueuedWithoutCreatingOrder()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        OrderCreatedMessage? published = null;
+
+        _publisher
+            .Setup(x => x.PublishAsync(
+                MessagingConstants.OrderExchange,
+                MessagingConstants.OrderCreatedRoutingKey,
+                It.IsAny<OrderCreatedMessage>(),
+                It.IsAny<IDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, OrderCreatedMessage, IDictionary<string, object?>?, CancellationToken>(
+                (_, _, msg, _, _) => published = msg)
+            .Returns(Task.CompletedTask);
+
+        var result = await CreateQueuedSut().PurchaseAsync(Dto());
+
+        Assert.True(result.IsQueued);
+        Assert.Null(result.Order);
+
+        Assert.NotNull(published);
+        Assert.Equal(1, published!.ProductId);
+        Assert.Equal(99, published.UserId);
+        Assert.Equal(result.RequestId, published.MessageId);
+
+        // 沒帶客戶端 Key 時退回 MessageId
+        Assert.Equal(published.MessageId.ToString(), published.IdempotencyKey);
+
+        // 訂單建立完全移出請求路徑 —— 這正是本階段要省下的工作
+        _orderRepository.Verify(
+            x => x.CreateAsync(It.IsAny<Order>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Queued_ShouldDeductStockSynchronously_NotViaQueue()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(0);
+
+        _productRepository
+            .Setup(x => x.GetByIdAsync(1))
+            .ReturnsAsync(new Product { Id = 1, Stock = 0 });
+
+        // 庫存不足必須「當下」就知道並拒絕。
+        // 若連扣庫存也非同步，API 只能先回「成功」再事後發現賣完 ——
+        // 那是把超賣從資料錯誤變成對客戶的謊言。
+        await Assert.ThrowsAsync<BusinessException>(
+            () => CreateQueuedSut().PurchaseAsync(Dto()));
+
+        _publisher.Verify(
+            x => x.PublishAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<OrderCreatedMessage>(),
+                It.IsAny<IDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Queued_WhenPublishFails_ShouldRestoreStock()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 2))
+            .ReturnsAsync(1);
+
+        _publisher
+            .Setup(x => x.PublishAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<OrderCreatedMessage>(),
+                It.IsAny<IDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("broker down"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateQueuedSut().PurchaseAsync(Dto(quantity: 2)));
+
+        // 庫存扣了但訊息沒送出去，這件商品會永遠賣不出去也沒有訂單。
+        // 必須補償回去。
+        _productRepository.Verify(
+            x => x.RestoreStockAsync(1, 2),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Queued_WhenProductMissing_ShouldThrowNotFoundAndNotPublish()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(0);
+
+        _productRepository
+            .Setup(x => x.GetByIdAsync(1))
+            .ReturnsAsync((Product?)null);
+
+        await Assert.ThrowsAsync<NotFoundException>(
+            () => CreateQueuedSut().PurchaseAsync(Dto()));
+
+        _productRepository.Verify(
+            x => x.RestoreStockAsync(It.IsAny<int>(), It.IsAny<int>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Queued_WhenClientProvidesKey_ShouldUseItInsteadOfMessageId()
+    {
+        _productRepository
+            .Setup(x => x.TryDeductStockAsync(1, 1))
+            .ReturnsAsync(1);
+
+        OrderCreatedMessage? published = null;
+
+        _publisher
+            .Setup(x => x.PublishAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<OrderCreatedMessage>(),
+                It.IsAny<IDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, OrderCreatedMessage, IDictionary<string, object?>?, CancellationToken>(
+                (_, _, msg, _, _) => published = msg)
+            .Returns(Task.CompletedTask);
+
+        var dto = Dto();
+        dto.IdempotencyKey = "client-key-1";
+
+        await CreateQueuedSut().PurchaseAsync(dto);
+
+        // 客戶端重送時 API 會產生新的 MessageId，
+        // 只有客戶端的 Key 能讓 Worker 認出「這是同一筆訂單」。
+        Assert.NotNull(published);
+        Assert.Equal("client-key-1", published!.IdempotencyKey);
+        Assert.NotEqual(published.MessageId.ToString(), published.IdempotencyKey);
+    }
+
+    [Fact]
+    public async Task Queued_WhenRabbitMqDisabled_ShouldRejectWithoutTouchingStock()
+    {
+        await Assert.ThrowsAsync<BusinessException>(
+            () => CreateQueuedSut(rabbitMqEnabled: false).PurchaseAsync(Dto()));
+
+        // 先檢查再扣庫存，否則會扣了庫存才發現無法發布
+        _productRepository.Verify(
+            x => x.TryDeductStockAsync(It.IsAny<int>(), It.IsAny<int>()),
+            Times.Never);
     }
 }

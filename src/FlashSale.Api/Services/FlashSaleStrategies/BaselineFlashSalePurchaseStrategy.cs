@@ -33,7 +33,7 @@ public class BaselineFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Baseline;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         var product = await _productRepository.GetByIdAsync(dto.ProductId);
 
@@ -60,11 +60,15 @@ public class BaselineFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
             ProductId = dto.ProductId,
             Quantity = dto.Quantity,
             Status = OrderStatus.Completed,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+
+            // 讓資料庫的篩選唯一索引成為重複訂單的最後一道防線。
+            // 沒帶 Idempotency-Key 時為 null，該索引已排除 NULL。
+            IdempotencyKey = dto.IdempotencyKey
         };
 
         await _orderRepository.CreateAsync(order);
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

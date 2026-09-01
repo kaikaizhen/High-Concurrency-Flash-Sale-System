@@ -50,7 +50,9 @@ export default function () {
     },
   );
 
-  if (res.status === 200) {
+  // 200 = 同步路徑，訂單已建立
+  // 202 = 非同步路徑，已受理並排入佇列（Stage 5）
+  if (res.status === 200 || res.status === 202) {
     success.add(1);
   } else if (res.status === 409) {
     // 庫存不足，或樂觀鎖重試次數用盡 —— 都是系統有意識地拒絕

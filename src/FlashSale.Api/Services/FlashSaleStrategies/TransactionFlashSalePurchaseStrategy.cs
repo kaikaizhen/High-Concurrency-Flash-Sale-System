@@ -43,7 +43,7 @@ public class TransactionFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Transaction;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         await using var transaction = await _unitOfWork.BeginTransactionAsync();
 
@@ -70,13 +70,27 @@ public class TransactionFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
             ProductId = dto.ProductId,
             Quantity = dto.Quantity,
             Status = OrderStatus.Completed,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+
+            // 讓資料庫的篩選唯一索引成為重複訂單的最後一道防線。
+            // 沒帶 Idempotency-Key 時為 null，該索引已排除 NULL。
+            IdempotencyKey = dto.IdempotencyKey
         };
 
-        await _orderRepository.CreateAsync(order);
+        var created = await _orderRepository.TryCreateAsync(order);
+
+        if (!created)
+        {
+            // 見 AtomicFlashSalePurchaseStrategy 的說明：
+            // 資料庫唯一索引是最後一道防線，擋下時必須 Rollback 還原庫存。
+            await transaction.RollbackAsync();
+
+            throw new BusinessException(
+                "A request with the same Idempotency-Key has already been processed.");
+        }
 
         await transaction.CommitAsync();
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

@@ -47,7 +47,7 @@ public class AtomicFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
 
     public FlashSaleStrategy Strategy => FlashSaleStrategy.Atomic;
 
-    public async Task<Order> PurchaseAsync(CreateFlashSaleDtoModel dto)
+    public async Task<FlashSalePurchaseResult> PurchaseAsync(CreateFlashSaleDtoModel dto)
     {
         await using var transaction = await _unitOfWork.BeginTransactionAsync();
 
@@ -74,13 +74,32 @@ public class AtomicFlashSalePurchaseStrategy : IFlashSalePurchaseStrategy
             ProductId = dto.ProductId,
             Quantity = dto.Quantity,
             Status = OrderStatus.Completed,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+
+            // 讓資料庫的篩選唯一索引成為重複訂單的最後一道防線。
+            // 沒帶 Idempotency-Key 時為 null，該索引已排除 NULL。
+            IdempotencyKey = dto.IdempotencyKey
         };
 
-        await _orderRepository.CreateAsync(order);
+        var created = await _orderRepository.TryCreateAsync(order);
+
+        if (!created)
+        {
+            // 這個 IdempotencyKey 已經有訂單了。
+            //
+            // 正常情況下 IdempotencyFilter 早就攔下了這次請求，走到這裡代表
+            // 前面的防護失效（例如 Redis 故障、或設定關閉了冪等保護）。
+            // 資料庫的篩選唯一索引是最後一道防線，它擋住了重複訂單。
+            //
+            // 必須 Rollback：庫存在上面已經扣掉了，但這次沒有真的賣出東西。
+            await transaction.RollbackAsync();
+
+            throw new BusinessException(
+                "A request with the same Idempotency-Key has already been processed.");
+        }
 
         await transaction.CommitAsync();
 
-        return order;
+        return FlashSalePurchaseResult.Completed(order);
     }
 }

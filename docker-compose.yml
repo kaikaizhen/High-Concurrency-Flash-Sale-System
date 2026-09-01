@@ -1,0 +1,163 @@
+# Stage 8：Nginx + 三個 API Instance。
+#
+#     docker compose up -d --build nginx
+#
+# 相依服務（SQL Server / Redis / RabbitMQ）預設連到外部主機，
+# 由 .env 的連線設定決定 —— 見 .env.example。
+#
+# 若沒有現成的 Redis / RabbitMQ，可以連同容器一起啟動：
+#
+#     docker compose --profile local-infra up -d
+#
+# 注意 SQL Server 不在這裡 —— 資料庫有 migration 與既有資料，
+# 用容器重建會讓先前階段的量測資料消失。
+
+services:
+  # ------------------------------------------------------------------
+  # 選用的本機相依服務（--profile local-infra 才會啟動）
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: flashsale-redis
+    profiles: ["local-infra"]
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: flashsale-rabbitmq
+    profiles: ["local-infra"]
+    ports:
+      - "5672:5672"    # AMQP —— 應用程式連這個
+      - "15672:15672"  # 管理介面 http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: flashsale
+      RABBITMQ_DEFAULT_PASS: flashsale
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------
+  # API Instance ×3
+  #
+  # 三者完全相同，只有 INSTANCE_ID 不同 —— 這正是 Stateless 的重點：
+  # 任何一台都能處理任何請求，沒有哪台「擁有」特定的狀態。
+  # ------------------------------------------------------------------
+  api-1: &api
+    build:
+      context: .
+      dockerfile: src/FlashSale.Api/Dockerfile
+    image: flashsale-api:latest
+    container_name: flashsale-api-1
+    environment:
+      ASPNETCORE_ENVIRONMENT: Container
+      INSTANCE_ID: api-1
+      ConnectionStrings__DefaultConnection: ${DB_CONNECTION}
+      Redis__Configuration: ${REDIS_CONFIGURATION}
+      Redis__User: ${REDIS_USER:-}
+      Redis__Password: ${REDIS_PASSWORD:-}
+      RabbitMq__HostName: ${RABBITMQ_HOST}
+      RabbitMq__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMq__UserName: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      # Stage 8 對照組開關：設為 false 可重現「行程內狀態」的問題
+      SharedState__DistributedMetrics: ${SHARED_METRICS:-true}
+      SharedState__DistributedLock: ${SHARED_LOCK:-true}
+      SharedState__DistributedRateLimit: ${SHARED_RATELIMIT:-true}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  api-2:
+    <<: *api
+    container_name: flashsale-api-2
+    environment:
+      ASPNETCORE_ENVIRONMENT: Container
+      INSTANCE_ID: api-2
+      ConnectionStrings__DefaultConnection: ${DB_CONNECTION}
+      Redis__Configuration: ${REDIS_CONFIGURATION}
+      Redis__User: ${REDIS_USER:-}
+      Redis__Password: ${REDIS_PASSWORD:-}
+      RabbitMq__HostName: ${RABBITMQ_HOST}
+      RabbitMq__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMq__UserName: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      # Stage 8 對照組開關：設為 false 可重現「行程內狀態」的問題
+      SharedState__DistributedMetrics: ${SHARED_METRICS:-true}
+      SharedState__DistributedLock: ${SHARED_LOCK:-true}
+      SharedState__DistributedRateLimit: ${SHARED_RATELIMIT:-true}
+
+  api-3:
+    <<: *api
+    container_name: flashsale-api-3
+    environment:
+      ASPNETCORE_ENVIRONMENT: Container
+      INSTANCE_ID: api-3
+      ConnectionStrings__DefaultConnection: ${DB_CONNECTION}
+      Redis__Configuration: ${REDIS_CONFIGURATION}
+      Redis__User: ${REDIS_USER:-}
+      Redis__Password: ${REDIS_PASSWORD:-}
+      RabbitMq__HostName: ${RABBITMQ_HOST}
+      RabbitMq__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMq__UserName: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      # Stage 8 對照組開關：設為 false 可重現「行程內狀態」的問題
+      SharedState__DistributedMetrics: ${SHARED_METRICS:-true}
+      SharedState__DistributedLock: ${SHARED_LOCK:-true}
+      SharedState__DistributedRateLimit: ${SHARED_RATELIMIT:-true}
+
+  # ------------------------------------------------------------------
+  # Stage 10：可觀測性儀表板
+  #
+  # Aspire Dashboard 一個容器就同時接收 Traces / Metrics / Logs（OTLP），
+  # 不需要另外架 Jaeger + Prometheus + Grafana 三套。
+  # 資料只存在記憶體中，重啟就消失 —— 適合開發與壓測分析，
+  # 正式環境需要有持久化的後端。
+  # ------------------------------------------------------------------
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: flashsale-dashboard
+    ports:
+      - "18888:18888"   # 網頁 UI
+      - "4317:18889"    # OTLP gRPC（對應用程式）
+    environment:
+      DASHBOARD__FRONTEND__AUTHMODE: Unsecured
+      DASHBOARD__OTLP__AUTHMODE: Unsecured
+
+  # ------------------------------------------------------------------
+  # 負載平衡
+  # ------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: flashsale-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+
+volumes:
+  redis-data:
+  rabbitmq-data:
